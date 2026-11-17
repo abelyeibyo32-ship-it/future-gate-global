@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, Upload, ArrowRight, AlertTriangle } from 'lucide-react';
 import { useFGGSystem } from '@/lib/useFGGSystem';
-import { getLeastLoadedSuperAgentId } from '../../../lib/superAgentLeastLoaded';
+import { getLeastLoadedSuperAgentId } from '@/lib/superAgentLeastLoaded';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
 
