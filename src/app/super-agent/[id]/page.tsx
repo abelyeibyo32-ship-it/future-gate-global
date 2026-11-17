@@ -1,37 +1,10 @@
 // src/app/super-agent/[id]/page.tsx
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { 
-  ShieldCheck, 
-  ArrowLeft, 
-  CheckCircle2, 
-  XCircle, 
-  Loader2, 
-  RefreshCw, 
-  ExternalLink,
-  Smartphone,
-  Building2
-} from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-
-interface TransactionRequest {
-  id: string;
-  agent_id: string;
-  type: 'deposit' | 'withdrawal' | 'registration';
-  method: 'telebirr' | 'cbe';
-  amount: number;
-  status: 'pending' | 'approved' | 'rejected';
-  sender_or_receiver_number: string;
-  transaction_ref?: string;
-  receipt_url?: string;
-  created_at: string;
-  super_agent_id: string;
-  super_agent_name: string;
-  tier?: string;
-}
+import { Lock, ShieldCheck, Loader2, Clock, CheckCircle2, XCircle, RefreshCw, Smartphone, Building2, ArrowLeft } from 'lucide-react';
 
 interface SuperAgentNode {
   id: string;
@@ -41,329 +14,347 @@ interface SuperAgentNode {
   phone?: string;
   telebirr_account?: string;
   cbe_account?: string;
+  node_password?: string;
 }
 
-function SuperAgentPortalContent() {
+interface TransactionRequest {
+  id: string;
+  tier: string;
+  transaction_ref: string;
+  type: string;
+  method: string;
+  amount: number;
+  sender_or_receiver_number: string;
+  agent_id: string;
+  super_agent_id: string;
+  super_agent_name: string;
+  receipt_url?: string;
+  status: string;
+  created_at?: string;
+}
+
+export default function SuperAgentPortal() {
   const params = useParams();
   const router = useRouter();
-  const nodeId = params?.id as string;
+  const agentId = params?.id as string;
 
-  const [isMounted, setIsMounted] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [loading, setLoading] = useState(false);
   const [nodeData, setNodeData] = useState<SuperAgentNode | null>(null);
-  const [requests, setRequests] = useState<TransactionRequest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [transactionRequests, setTransactionRequests] = useState<TransactionRequest[]>([]);
   const [processingId, setProcessingId] = useState<string | null>(null);
-  const [notification, setNotification] = useState<string | null>(null);
+  const [fetchingData, setFetchingData] = useState(false);
 
   useEffect(() => {
-    setIsMounted(true);
-    if (nodeId) {
-      fetchNodeAndRequests();
+    if (!agentId) return;
+
+    const sessionAuth = sessionStorage.getItem(`fgg_sa_auth_${agentId}`);
+    if (sessionAuth === 'true') {
+      setIsAuthenticated(true);
+      fetchPortalData();
     }
-  }, [nodeId]);
+  }, [agentId]);
 
-  const showToast = (msg: string) => {
-    setNotification(msg);
-    setTimeout(() => setNotification(null), 4000);
-  };
-
-  const fetchNodeAndRequests = async () => {
-    setLoading(true);
+  const fetchPortalData = async () => {
+    setFetchingData(true);
     try {
       const { data: nodeRes, error: nodeErr } = await supabase
         .from('super_agents')
         .select('*')
-        .eq('id', nodeId)
-        .maybeSingle();
+        .eq('id', agentId)
+        .single();
 
       if (nodeErr) throw nodeErr;
-      if (nodeRes) {
-        setNodeData(nodeRes as SuperAgentNode);
-      }
+      if (nodeRes) setNodeData(nodeRes);
 
-      const { data: txRes } = await supabase
+      const { data: reqsRes, error: reqsErr } = await supabase
         .from('transaction_requests')
         .select('*')
-        .or(`super_agent_id.eq.${nodeId},super_agent_name.ilike.%${nodeRes?.name || ''}%`)
+        .eq('super_agent_id', agentId)
+        .eq('status', 'pending')
         .order('created_at', { ascending: false });
 
-      if (!txRes || txRes.length === 0) {
-        const { data: allTx } = await supabase
-          .from('transaction_requests')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(50);
-        if (allTx) setRequests(allTx as TransactionRequest[]);
-      } else {
-        setRequests(txRes as TransactionRequest[]);
+      if (reqsErr) throw reqsErr;
+      if (reqsRes) setTransactionRequests(reqsRes);
+
+    } catch (err) {
+      console.error('Failed to load portal data:', err);
+    } finally {
+      setFetchingData(false);
+    }
+  };
+
+  const handleUnlockPortal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      const { data, error } = await supabase
+        .from('super_agents')
+        .select('*')
+        .eq('id', agentId)
+        .single();
+
+      if (error || !data) {
+        alert('Node not found.');
+        setLoading(false);
+        return;
       }
-    } catch (err: any) {
-      console.error('Error fetching portal data:', err);
-      showToast(`Error loading portal: ${err.message}`);
+
+      if (data.node_password && data.node_password !== passwordInput.trim()) {
+        alert('Invalid node password. Access denied.');
+        setLoading(false);
+        return;
+      }
+
+      sessionStorage.setItem(`fgg_sa_auth_${agentId}`, 'true');
+      setIsAuthenticated(true);
+      setNodeData(data);
+      fetchPortalData();
+    } catch (err) {
+      alert('Authentication error occurred.');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (!nodeId) return;
-    const channel = supabase
-      .channel(`super-agent-portal-${nodeId}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'transaction_requests' },
-        () => fetchNodeAndRequests()
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [nodeId]);
-
   const handleApproveRequest = async (req: TransactionRequest) => {
-    if (processingId) return;
     setProcessingId(req.id);
-
     try {
-      if (req.type === 'withdrawal') {
-        const { data: agentData, error: agentFetchErr } = await supabase
-          .from('agents')
-          .select('balance')
-          .eq('id', req.agent_id)
-          .single();
-
-        if (agentFetchErr || !agentData) {
-          throw new Error('Could not verify agent balance record.');
-        }
-
-        const currentBalance = Number(agentData.balance || 0);
-        const withdrawAmount = Number(req.amount || 0);
-
-        if (withdrawAmount > currentBalance) {
-          throw new Error(`Insufficient balance. Agent has ETB ${currentBalance.toLocaleString()}, requested ETB ${withdrawAmount.toLocaleString()}.`);
-        }
-
-        const newBalance = Math.max(0, currentBalance - withdrawAmount);
-        const { error: balanceUpdateErr } = await supabase
-          .from('agents')
-          .update({ balance: newBalance })
-          .eq('id', req.agent_id);
-
-        if (balanceUpdateErr) throw balanceUpdateErr;
-      }
-
-      if (req.type === 'deposit') {
-        const { data: agentData } = await supabase
-          .from('agents')
-          .select('balance')
-          .eq('id', req.agent_id)
-          .maybeSingle();
-
-        const currentBalance = Number(agentData?.balance || 0);
-        const depositAmount = Number(req.amount || 0);
-
-        await supabase
-          .from('agents')
-          .update({ balance: currentBalance + depositAmount })
-          .eq('id', req.agent_id);
-      }
-
-      const { error: updateTxErr } = await supabase
+      const { error: updateError } = await supabase
         .from('transaction_requests')
         .update({ status: 'approved' })
         .eq('id', req.id);
 
-      if (updateTxErr) throw updateTxErr;
+      if (updateError) throw updateError;
 
-      showToast(`Successfully approved ${req.type} of ETB ${Number(req.amount).toLocaleString()}`);
-      await fetchNodeAndRequests();
+      if (req.type === 'registration' || req.type === 'deposit') {
+        const { data: agentData } = await supabase
+          .from('agents')
+          .select('capital_balance, balance')
+          .eq('id', req.agent_id)
+          .single();
+
+        if (agentData) {
+          const newCapital = (agentData.capital_balance || 0) + req.amount;
+          await supabase
+            .from('agents')
+            .update({ capital_balance: newCapital })
+            .eq('id', req.agent_id);
+        }
+      }
+
+      alert(`Transaction ${req.transaction_ref} approved successfully.`);
+      fetchPortalData();
     } catch (err: any) {
-      console.error('Approval failed:', err);
-      showToast(`Approval failed: ${err.message}`);
+      alert(`Approval Error: ${err.message || err}`);
     } finally {
       setProcessingId(null);
     }
   };
 
-  const handleRejectRequest = async (reqId: string) => {
-    if (processingId) return;
-    setProcessingId(reqId);
+  const handleRejectRequest = async (req: TransactionRequest) => {
+    const reason = prompt('Enter rejection reason for agent notification:', 'Invalid payment receipt or incorrect amount.');
+    if (reason === null) return;
 
+    setProcessingId(req.id);
     try {
-      const { error } = await supabase
+      const { error: updateError } = await supabase
         .from('transaction_requests')
         .update({ status: 'rejected' })
-        .eq('id', reqId);
+        .eq('id', req.id);
 
-      if (error) throw error;
+      if (updateError) throw updateError;
 
-      showToast('Transaction request rejected.');
-      await fetchNodeAndRequests();
+      alert(`Transaction ${req.transaction_ref} rejected.`);
+      fetchPortalData();
     } catch (err: any) {
-      console.error('Rejection failed:', err);
-      showToast(`Rejection failed: ${err.message}`);
+      alert(`Rejection Error: ${err.message || err}`);
     } finally {
       setProcessingId(null);
     }
   };
 
-  if (!isMounted) return <div className="min-h-screen bg-[#F5F7FA]" />;
-
-  return (
-    <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-mono p-4 sm:p-8 pb-28 selection:bg-[#0B1B36] selection:text-white relative">
-      {notification && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#0B1B36] text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-white/20 text-xs font-mono flex items-center gap-3 animate-in fade-in">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
-          <span>{notification}</span>
-        </div>
-      )}
-
-      <div className="max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <Link href="/super-agent" className="inline-flex items-center gap-2 text-xs font-bold text-[#536171] hover:text-[#0B1B36] transition">
-            <ArrowLeft size={16} /> Back to Super Agent Directory
-          </Link>
-          <button 
-            onClick={fetchNodeAndRequests} 
-            disabled={loading}
-            className="px-3 py-1.5 rounded-xl bg-white border border-[#AEB8C4]/40 text-xs font-bold hover:bg-[#0B1B36] hover:text-white transition flex items-center gap-1.5 cursor-pointer"
-          >
-            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh Node
-          </button>
-        </div>
-
-        <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#0E2447] text-white rounded-3xl p-6 sm:p-8 border border-white/10 shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 text-xs font-extrabold text-emerald-300">
-              <ShieldCheck size={18} /> Verified Super Agent Clearing Node
-            </div>
-            <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
-              {nodeData?.name || 'Super Agent Portal'}
-            </h1>
-            <p className="text-xs text-[#AEB8C4]">
-              Tier: <strong className="text-white">{nodeData?.tier || 'General'}</strong> | Region: <strong className="text-white">{nodeData?.region || 'Central'}</strong>
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-mono flex flex-col justify-center items-center p-4">
+        <div className="w-full max-w-md bg-white p-8 rounded-3xl border border-[#AEB8C4]/40 shadow-xl space-y-6 text-center">
+          <div className="w-14 h-14 bg-[#0B1B36] text-white rounded-2xl mx-auto flex items-center justify-center shadow-md">
+            <Lock size={24} />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-base font-extrabold text-[#0B1B36]">Restricted Node Portal</h2>
+            <p className="text-[11px] text-[#536171]">
+              Enter your Super Agent authorization password to unlock terminal session.
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-3 text-xs">
-            {nodeData?.telebirr_account && (
-              <div className="bg-white/10 px-4 py-2.5 rounded-2xl border border-white/10 flex items-center gap-2">
-                <Smartphone size={14} className="text-emerald-400" />
-                <span>Telebirr: <strong>{nodeData.telebirr_account}</strong></span>
-              </div>
-            )}
-            {nodeData?.cbe_account && (
-              <div className="bg-white/10 px-4 py-2.5 rounded-2xl border border-white/10 flex items-center gap-2">
-                <Building2 size={14} className="text-blue-300" />
-                <span>CBE: <strong>{nodeData.cbe_account}</strong></span>
-              </div>
-            )}
+          <form onSubmit={handleUnlockPortal} className="space-y-4 text-left">
+            <div className="space-y-1">
+              <label className="font-bold text-[#536171] uppercase text-[10px]">Node Password</label>
+              <input
+                type="password"
+                placeholder="••••••••••••"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3.5 rounded-xl bg-[#0B1B36] hover:bg-[#152d56] text-white font-bold uppercase tracking-wider text-xs transition shadow-md cursor-pointer flex items-center justify-center gap-2"
+            >
+              {loading && <Loader2 size={15} className="animate-spin" />}
+              {loading ? 'Authenticating...' : 'Unlock Node Terminal'}
+            </button>
+          </form>
+
+          <div className="pt-2">
+            <button
+              onClick={() => router.push('/super-agent')}
+              className="text-xs text-[#536171] hover:text-[#0B1B36] font-bold underline cursor-pointer"
+            >
+              ← Back to Super Agent Directory
+            </button>
+          </div>
+
+          <div className="text-[10px] text-[#536171] flex items-center justify-center gap-1 pt-2">
+            <ShieldCheck size={13} /> Secured Escrow Authorization
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-mono flex flex-col p-6 sm:p-12 selection:bg-[#0B1B36] selection:text-white">
+      <div className="max-w-5xl mx-auto w-full space-y-6">
+        
+        {/* Top Header Bar */}
+        <div className="bg-white p-6 rounded-3xl border border-[#AEB8C4]/40 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => router.push('/super-agent')}
+                className="px-3 py-1.5 rounded-xl bg-[#F5F7FA] hover:bg-[#0B1B36] hover:text-white transition text-xs font-bold flex items-center gap-1 cursor-pointer border border-[#AEB8C4]/30"
+              >
+                <ArrowLeft size={14} /> Directory
+              </button>
+              <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-200">
+                ● Secure Session Active
+              </span>
+            </div>
+            <h1 className="text-xl font-extrabold text-[#0B1B36] mt-2">Node Portal: {nodeData?.name}</h1>
+            <p className="text-xs text-[#536171]">Tier: {nodeData?.tier} | Region: {nodeData?.region || 'Central'}</p>
+          </div>
+
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            <button
+              onClick={fetchPortalData}
+              disabled={fetchingData}
+              className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-[#0B1B36] hover:text-white border border-[#AEB8C4]/40 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <RefreshCw size={13} className={fetchingData ? 'animate-spin' : ''} />
+              <span>Refresh</span>
+            </button>
+            <button
+              onClick={() => {
+                sessionStorage.removeItem(`fgg_sa_auth_${agentId}`);
+                setIsAuthenticated(false);
+              }}
+              className="px-4 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold hover:bg-rose-100 transition cursor-pointer"
+            >
+              Lock Session
+            </button>
           </div>
         </div>
 
-        <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-sm space-y-6">
-          <div className="flex items-center justify-between border-b border-[#AEB8C4]/30 pb-4">
-            <div>
-              <h2 className="text-base font-extrabold text-[#0B1B36]">Pending Transaction & Withdrawal Queue</h2>
-              <p className="text-[11px] text-[#536171]">Approve or reject agent deposit and withdrawal requests assigned to this node.</p>
+        {/* Node Account Details Summary */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-white p-5 rounded-3xl border border-[#AEB8C4]/40 shadow-xs space-y-2 text-xs">
+            <div className="font-extrabold text-[#0B1B36] uppercase text-[10px] tracking-wider text-slate-400">Telebirr Node Account</div>
+            <div className="font-bold text-sm text-[#0B1B36] flex items-center gap-2">
+              <Smartphone size={16} className="text-emerald-600" /> {nodeData?.telebirr_account || nodeData?.phone || 'Not configured'}
             </div>
-            <span className="px-3 py-1 rounded-full bg-slate-100 text-[#0B1B36] text-xs font-bold border border-slate-300">
-              {requests.filter(r => r.status === 'pending').length} Pending
-            </span>
+          </div>
+          <div className="bg-white p-5 rounded-3xl border border-[#AEB8C4]/40 shadow-xs space-y-2 text-xs">
+            <div className="font-extrabold text-[#0B1B36] uppercase text-[10px] tracking-wider text-slate-400">CBE Escrow Account</div>
+            <div className="font-bold text-sm text-[#0B1B36] flex items-center gap-2">
+              <Building2 size={16} className="text-blue-600" /> {nodeData?.cbe_account || 'Not configured'}
+            </div>
+          </div>
+        </div>
+
+        {/* Pending Verification Queue for this Node */}
+        <div className="space-y-4 pt-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
+              <Clock size={16} className="text-amber-600" /> Pending Verification Queue ({transactionRequests.length})
+            </h2>
           </div>
 
-          {loading && requests.length === 0 ? (
-            <div className="py-16 text-center text-xs text-[#536171] flex flex-col items-center justify-center gap-2">
-              <Loader2 size={24} className="animate-spin text-[#0B1B36]" /> Synchronizing clearing queue...
+          {fetchingData && transactionRequests.length === 0 ? (
+            <div className="bg-white p-12 rounded-3xl border border-[#AEB8C4]/40 text-center text-xs text-[#536171] shadow-xs">
+              Synchronizing pending requests for this node...
             </div>
-          ) : requests.length === 0 ? (
-            <div className="py-16 text-center text-xs text-[#536171] bg-[#F5F7FA] rounded-2xl border border-[#AEB8C4]/30">
-              No transaction requests found in the queue.
+          ) : transactionRequests.length === 0 ? (
+            <div className="bg-white p-12 rounded-3xl border border-[#AEB8C4]/40 text-center text-xs text-[#536171] shadow-xs">
+              No pending registration or deposit requests assigned to this node.
             </div>
           ) : (
-            <div className="space-y-4">
-              {requests.map((req) => (
-                <div 
-                  key={req.id} 
-                  className={`p-5 rounded-2xl border transition flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
-                    req.status === 'pending' ? 'bg-[#F5F7FA] border-[#AEB8C4]/50 shadow-xs' : 'bg-white border-[#AEB8C4]/20 opacity-80'
-                  }`}
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-extrabold uppercase ${
-                        req.type === 'deposit' ? 'bg-[#0B1B36] text-white' :
-                        req.type === 'withdrawal' ? 'bg-emerald-600 text-white' : 'bg-indigo-700 text-white'
-                      }`}>
+            <div className="grid grid-cols-1 gap-4">
+              {transactionRequests.map((req) => (
+                <div key={req.id} className="bg-white p-6 rounded-3xl border border-[#AEB8C4]/40 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold uppercase text-[10px]">
                         {req.type}
                       </span>
-                      <span className="font-extrabold text-base text-[#0B1B36]">ETB {Number(req.amount).toLocaleString()}</span>
-                      <span className="text-[11px] font-bold text-[#536171] uppercase">({req.method})</span>
-                      {req.tier && (
-                        <span className="px-2 py-0.5 rounded bg-slate-200 text-[#0B1B36] text-[10px] font-bold">
-                          {req.tier}
-                        </span>
-                      )}
+                      <span className="font-extrabold text-[#0B1B36]">{req.transaction_ref}</span>
+                      <span className="text-slate-400">| Tier: {req.tier}</span>
                     </div>
-
-                    <div className="text-xs text-[#536171] space-y-1">
-                      <div>Account / Phone: <strong className="text-[#0B1B36]">{req.sender_or_receiver_number}</strong></div>
-                      <div>Date: {new Date(req.created_at).toLocaleString()} | Ref: <strong className="text-[#0B1B36]">{req.transaction_ref || 'N/A'}</strong></div>
-                      {req.receipt_url && (
-                        <div>
-                          <a href={req.receipt_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-bold text-blue-700 underline pt-1">
-                            View Receipt Proof <ExternalLink size={12} />
-                          </a>
-                        </div>
-                      )}
+                    <div className="text-[#536171]">
+                      Method: <strong className="uppercase">{req.method}</strong> | Sender Account: <strong className="text-[#0B1B36]">{req.sender_or_receiver_number}</strong>
                     </div>
+                    <div className="text-[#536171]">
+                      Amount: <strong className="text-emerald-700 font-bold">ETB {req.amount.toLocaleString()}</strong>
+                    </div>
+                    {req.receipt_url && (
+                      <div>
+                        <a href={req.receipt_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline font-bold hover:text-blue-800 text-[11px]">
+                          View Uploaded Receipt Proof →
+                        </a>
+                      </div>
+                    )}
                   </div>
 
-                  <div className="flex items-center gap-3 w-full md:w-auto justify-end">
-                    {req.status === 'pending' ? (
-                      <>
-                        <button
-                          onClick={() => handleApproveRequest(req)}
-                          disabled={processingId === req.id}
-                          className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs uppercase tracking-wider transition flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
-                        >
-                          {processingId === req.id ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => handleRejectRequest(req.id)}
-                          disabled={processingId === req.id}
-                          className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-extrabold text-xs uppercase tracking-wider transition flex items-center gap-1.5 shadow-sm cursor-pointer disabled:opacity-50"
-                        >
-                          {processingId === req.id ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
-                          Reject
-                        </button>
-                      </>
-                    ) : (
-                      <span className={`px-4 py-1.5 rounded-full text-xs font-bold uppercase flex items-center gap-1.5 ${
-                        req.status === 'approved' ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {req.status === 'approved' && <CheckCircle2 size={14} />}
-                        {req.status === 'rejected' && <XCircle size={14} />}
-                        {req.status}
-                      </span>
-                    )}
+                  <div className="flex items-center gap-2 w-full md:w-auto shrink-0">
+                    <button
+                      onClick={() => handleApproveRequest(req)}
+                      disabled={processingId === req.id}
+                      className="flex-1 md:flex-none px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <CheckCircle2 size={15} /> Approve
+                    </button>
+                    <button
+                      onClick={() => handleRejectRequest(req)}
+                      disabled={processingId === req.id}
+                      className="flex-1 md:flex-none px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <XCircle size={15} /> Reject
+                    </button>
                   </div>
                 </div>
               ))}
             </div>
           )}
         </div>
+
       </div>
     </div>
-  );
-}
-
-export default function SuperAgentPortalPage() {
-  return (
-    <Suspense fallback={<div className="min-h-screen bg-[#F5F7FA] flex items-center justify-center font-mono text-xs text-[#0B1B36]">Loading Super Agent Portal...</div>}>
-      <SuperAgentPortalContent />
-    </Suspense>
   );
 }
