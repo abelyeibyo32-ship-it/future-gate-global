@@ -367,7 +367,7 @@ function SignupContent() {
                   <label className="font-bold text-[#536171] uppercase text-[10px]">Username / Full Name</label>
                   <input
                     type="text"
-                    placeholder="e.g. Abel Yeibyo"
+                    placeholder="e.g. username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
                     className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
