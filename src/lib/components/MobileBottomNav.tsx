@@ -1,5 +1,5 @@
 // src/lib/components/MobileBottomNav.tsx
-'Yse client';
+'use client';
 
 import React, { Suspense } from 'react';
 import Link from 'next/link';
@@ -44,11 +44,15 @@ function NavContent() {
         <Wallet size={20} />
       </Link>
 
-      {/* Tasks Nav Item (Leads to Dashboard task section without activating dashboard icon if distinguished, or keeps it isolated) */}
+      {/* Tasks Nav Item */}
       <Link
-        href="/dashboard#tasks"
+        href="/tasks"
         aria-label="Tasks"
-        className="p-3 rounded-xl transition-all duration-300 flex items-center justify-center text-white/60 hover:text-white hover:bg-white/5"
+        className={`p-3 rounded-xl transition-all duration-300 flex items-center justify-center ${
+          pathname === '/tasks'
+            ? 'bg-white text-[#0B1B36] shadow-md scale-110'
+            : 'text-white/60 hover:text-white hover:bg-white/5'
+        }`}
       >
         <CheckSquare size={20} />
       </Link>

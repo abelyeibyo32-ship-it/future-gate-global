@@ -26,7 +26,9 @@ import {
   DollarSign,
   TrendingUp,
   CreditCard,
-  Phone
+  Phone,
+  User,
+  Image as ImageIcon
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -73,6 +75,8 @@ interface TransactionRequest {
 
 interface AgentRecord {
   id: string;
+  username?: string;
+  phone?: string;
   capital_balance?: number;
   balance?: number;
   tier?: string;
@@ -99,6 +103,9 @@ function AdminConsoleContent() {
   const [isNodeModalOpen, setIsNodeModalOpen] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
 
+  // Screenshot Preview Modal State
+  const [previewReceiptUrl, setPreviewReceiptUrl] = useState<string | null>(null);
+
   // Form States for Node Creation/Edit
   const [nodeFormName, setNodeFormName] = useState('');
   const [nodeFormTier, setNodeFormTier] = useState('Solar Systems');
@@ -119,20 +126,17 @@ function AdminConsoleContent() {
   const fetchAdminData = async () => {
     setLoading(true);
 
-    // Fetch Super Agent Nodes
     const { data: nodesData } = await supabase
       .from('super_agents')
       .select('*')
       .order('id', { ascending: true });
     if (nodesData) setSuperAgents(nodesData as SuperAgentNode[]);
 
-    // Fetch Agents Registry
     const { data: agentsData } = await supabase
       .from('agents')
       .select('*');
     if (agentsData) setAgents(agentsData as AgentRecord[]);
 
-    // Fetch All Transaction Requests
     const { data: txData } = await supabase
       .from('transaction_requests')
       .select('*')
@@ -146,7 +150,6 @@ function AdminConsoleContent() {
     if (!isAuthenticated) return;
     fetchAdminData();
 
-    // Real-Time Subscriptions for Master Sync
     const channel = supabase
       .channel('admin-master-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'super_agents' }, () => fetchAdminData())
@@ -159,7 +162,6 @@ function AdminConsoleContent() {
     };
   }, [isAuthenticated]);
 
-  // Master Login Handler
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (adminPin.trim() === ADMIN_MASTER_PIN) {
@@ -172,7 +174,6 @@ function AdminConsoleContent() {
     }
   };
 
-  // Node Modal Handlers
   const handleOpenCreateModal = () => {
     setEditingNodeId(null);
     setNodeFormName('');
@@ -212,7 +213,6 @@ function AdminConsoleContent() {
     };
 
     if (editingNodeId) {
-      // PATCH (Update Existing Super Agent Node)
       const { error } = await supabase
         .from('super_agents')
         .update(payload)
@@ -224,7 +224,6 @@ function AdminConsoleContent() {
         showToast(`Node ${editingNodeId} & Wallets Updated!`);
       }
     } else {
-      // POST (Create New Super Agent Node with Timestamp ID)
       const newId = `sa-${Date.now().toString().slice(-4)}`;
       const { error } = await supabase
         .from('super_agents')
@@ -254,7 +253,6 @@ function AdminConsoleContent() {
     }
   };
 
-  // System Telemetry Metrics
   const totalCapitalBase = useMemo(() => {
     return agents.reduce((sum, a) => sum + Number(a.capital_balance || 0), 0);
   }, [agents]);
@@ -276,7 +274,18 @@ function AdminConsoleContent() {
     return transactions.filter((t) => t.type === txFilter);
   }, [transactions, txFilter]);
 
-  // Lock Gate
+  const agentMap = useMemo(() => {
+    const map = new Map<string, AgentRecord>();
+    agents.forEach((a) => map.set(a.id, a));
+    return map;
+  }, [agents]);
+
+  const superAgentMap = useMemo(() => {
+    const map = new Map<string, SuperAgentNode>();
+    superAgents.forEach((s) => map.set(s.id, s));
+    return map;
+  }, [superAgents]);
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-mono flex items-center justify-center p-4">
@@ -329,7 +338,6 @@ function AdminConsoleContent() {
   return (
     <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-mono p-4 sm:p-8 relative selection:bg-[#0B1B36] selection:text-white">
       
-      {/* TOAST NOTIFICATION */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 bg-[#0B1B36] text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-white/20 text-xs font-mono flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
@@ -337,7 +345,30 @@ function AdminConsoleContent() {
         </div>
       )}
 
-      {/* NODE CREATION & EDIT MODAL */}
+      {previewReceiptUrl && (
+        <div className="fixed inset-0 bg-[#0B1B36]/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-2xl w-full shadow-2xl border border-[#AEB8C4]/40 space-y-4 text-center">
+            <div className="flex justify-between items-center border-b border-[#AEB8C4]/30 pb-3">
+              <h3 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
+                <ImageIcon size={16} className="text-[#0B1B36]" /> Transaction Receipt Proof
+              </h3>
+              <button onClick={() => setPreviewReceiptUrl(null)} className="text-[#536171] hover:text-[#0B1B36] font-bold cursor-pointer text-sm">✕</button>
+            </div>
+            <div className="overflow-auto max-h-[70vh] rounded-2xl border border-[#AEB8C4]/30 bg-slate-50 p-2 flex items-center justify-center">
+              <img src={previewReceiptUrl} alt="Transaction Receipt Proof" className="max-w-full rounded-xl object-contain shadow-md" />
+            </div>
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setPreviewReceiptUrl(null)}
+                className="px-5 py-2.5 rounded-xl bg-[#0B1B36] text-white text-xs font-bold hover:bg-[#152d56] transition cursor-pointer"
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isNodeModalOpen && (
         <div className="fixed inset-0 bg-[#0B1B36]/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl border border-[#AEB8C4]/40 space-y-6">
@@ -417,7 +448,6 @@ function AdminConsoleContent() {
                 </div>
               </div>
 
-              {/* LINKED PAYMENT GATEWAYS */}
               <div className="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-100 space-y-3 pt-3">
                 <div className="text-[11px] font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
                   <Wallet size={14} className="text-indigo-600" /> Linked Payment Gateways
@@ -462,10 +492,8 @@ function AdminConsoleContent() {
         </div>
       )}
 
-      {/* CONTAINER */}
       <div className="max-w-6xl mx-auto space-y-6">
         
-        {/* HEADER */}
         <div className="bg-[#0B1B36] text-white p-6 sm:p-8 rounded-3xl shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div className="space-y-1">
             <div className="text-xs text-[#AEB8C4] uppercase tracking-wider font-bold flex items-center gap-2">
@@ -493,7 +521,6 @@ function AdminConsoleContent() {
           </div>
         </div>
 
-        {/* METRICS DASHBOARD */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
           <div className="bg-white p-5 rounded-3xl border border-[#AEB8C4]/40 shadow-xs space-y-1">
             <div className="text-[10px] text-[#536171] uppercase font-bold tracking-wider flex items-center gap-1.5">
@@ -532,7 +559,6 @@ function AdminConsoleContent() {
           </div>
         </div>
 
-        {/* NAVIGATION TABS */}
         <div className="flex bg-white p-1.5 rounded-2xl border border-[#AEB8C4]/40 gap-2 font-mono text-xs max-w-md">
           <button
             onClick={() => setActiveTab('overview')}
@@ -560,7 +586,6 @@ function AdminConsoleContent() {
           </button>
         </div>
 
-        {/* TAB 1: SYSTEM OVERVIEW & CATEGORY BREAKDOWN */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
             <div className="bg-white rounded-3xl p-6 border border-[#AEB8C4]/40 shadow-md space-y-4">
@@ -586,7 +611,6 @@ function AdminConsoleContent() {
           </div>
         )}
 
-        {/* TAB 2: SUPER AGENT NODES & WALLET MANAGEMENT */}
         {activeTab === 'nodes' && (
           <div className="bg-white rounded-3xl p-6 border border-[#AEB8C4]/40 shadow-md space-y-4">
             <div className="flex justify-between items-center pb-2 border-b border-[#AEB8C4]/30">
@@ -627,7 +651,6 @@ function AdminConsoleContent() {
                     </div>
                   </div>
 
-                  {/* LINKED GATEWAYS DISPLAY */}
                   <div className="p-3 rounded-xl bg-white border border-[#AEB8C4]/30 text-xs space-y-1">
                     <div className="text-[10px] font-bold text-[#536171] uppercase flex items-center gap-1">
                       <CreditCard size={12} className="text-emerald-600" /> Linked Payment Gateways
@@ -662,7 +685,6 @@ function AdminConsoleContent() {
           </div>
         )}
 
-        {/* TAB 3: GLOBAL TRANSACTION AUDIT QUEUE */}
         {activeTab === 'transactions' && (
           <div className="bg-white rounded-3xl p-6 border border-[#AEB8C4]/40 shadow-md space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#AEB8C4]/30">
@@ -711,42 +733,98 @@ function AdminConsoleContent() {
                 No system transactions matching category <strong className="uppercase">{txFilter}</strong>.
               </div>
             ) : (
-              <div className="space-y-3">
-                {filteredTransactions.map((tx) => (
-                  <div key={tx.id} className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 text-xs">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-extrabold uppercase ${
-                          tx.type === 'registration' ? 'bg-indigo-700 text-white' :
-                          tx.type === 'deposit' ? 'bg-[#0B1B36] text-white' : 'bg-emerald-600 text-white'
-                        }`}>
-                          {tx.type}
-                        </span>
-                        <span className="font-extrabold text-sm text-[#0B1B36]">ETB {Number(tx.amount).toLocaleString()}</span>
-                        <span className="text-[10px] text-[#536171]">via {tx.method.toUpperCase()}</span>
-                        <span className="text-[10px] text-[#536171]">Node: <strong className="text-[#0B1B36]">{tx.super_agent_id || 'Unassigned'}</strong></span>
+              <div className="space-y-4">
+                {filteredTransactions.map((tx) => {
+                  const senderAgent = agentMap.get(tx.agent_id);
+                  const approverNode = tx.super_agent_id ? superAgentMap.get(tx.super_agent_id) : null;
+
+                  return (
+                    <div key={tx.id} className="p-5 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 space-y-4 text-xs">
+                      
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#AEB8C4]/20 pb-3">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase ${
+                            tx.type === 'registration' ? 'bg-indigo-700 text-white' :
+                            tx.type === 'deposit' ? 'bg-[#0B1B36] text-white' : 'bg-emerald-600 text-white'
+                          }`}>
+                            {tx.type}
+                          </span>
+                          <span className="font-bold text-[#0B1B36]">{tx.transaction_ref || `REF-${tx.id.slice(0, 8)}`}</span>
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
+                            tx.status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
+                            tx.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {tx.status}
+                          </span>
+                        </div>
+
+                        <div className="text-right">
+                          <div className="text-sm font-extrabold text-[#0B1B36]">ETB {Number(tx.amount || 0).toLocaleString()}</div>
+                          <div className="text-[10px] text-[#536171]">{new Date(tx.created_at).toLocaleString()}</div>
+                        </div>
                       </div>
 
-                      <div className="text-[11px] text-[#536171] space-y-0.5">
-                        <div>Account / Phone: <strong className="text-[#0B1B36]">{tx.sender_or_receiver_number}</strong> | Agent ID: <strong className="text-[#0B1B36]">{tx.agent_id}</strong></div>
-                        {tx.transaction_ref && <div>Ref: <strong className="text-[#0B1B36]">{tx.transaction_ref}</strong></div>}
-                        <div>Date: {new Date(tx.created_at).toLocaleString()}</div>
-                      </div>
-                    </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        
+                        <div className="p-3.5 rounded-xl bg-white border border-[#AEB8C4]/30 space-y-1.5">
+                          <div className="text-[10px] font-bold text-[#536171] uppercase flex items-center gap-1.5">
+                            <User size={13} className="text-[#0B1B36]" /> Sender / Operator Details
+                          </div>
+                          <div className="space-y-1 pt-0.5">
+                            <div className="flex justify-between">
+                              <span className="text-[#536171]">Username:</span>
+                              <strong className="text-[#0B1B36]">{senderAgent?.username || 'Unknown Operator'}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#536171]">Phone / Account Number:</span>
+                              <strong className="text-[#0B1B36] font-mono">{tx.sender_or_receiver_number || senderAgent?.phone || 'N/A'}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#536171]">Agent ID:</span>
+                              <strong className="text-slate-500 font-mono text-[10px]">{tx.agent_id}</strong>
+                            </div>
+                          </div>
+                        </div>
 
-                    <div className="flex items-center gap-3 justify-end">
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase flex items-center gap-1 ${
-                        tx.status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
-                        tx.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
-                      }`}>
-                        {tx.status === 'approved' && <CheckCircle2 size={12} />}
-                        {tx.status === 'rejected' && <XCircle size={12} />}
-                        {tx.status === 'pending' && <Clock size={12} />}
-                        {tx.status}
-                      </span>
+                        <div className="p-3.5 rounded-xl bg-white border border-[#AEB8C4]/30 space-y-1.5">
+                          <div className="text-[10px] font-bold text-[#536171] uppercase flex items-center gap-1.5">
+                            <Building2 size={13} className="text-indigo-600" /> Approver / Inviter Node Details
+                          </div>
+                          <div className="space-y-1 pt-0.5">
+                            <div className="flex justify-between">
+                              <span className="text-[#536171]">Node Name:</span>
+                              <strong className="text-[#0B1B36]">{tx.super_agent_name || approverNode?.name || 'Central Escrow Node'}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#536171]">Gateway Method:</span>
+                              <strong className="text-[#0B1B36] uppercase">{tx.method || 'telebirr'}</strong>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#536171]">Node ID:</span>
+                              <strong className="text-slate-500 font-mono text-[10px]">{tx.super_agent_id || 'sa-default'}</strong>
+                            </div>
+                          </div>
+                        </div>
+
+                      </div>
+
+                      {tx.receipt_url && (
+                        <div className="pt-1 flex items-center justify-between border-t border-[#AEB8C4]/20 mt-2 pt-3">
+                          <div className="text-[11px] text-[#536171] flex items-center gap-1">
+                            <ImageIcon size={14} className="text-emerald-600" /> Payment transaction receipt attached.
+                          </div>
+                          <button
+                            onClick={() => setPreviewReceiptUrl(tx.receipt_url || null)}
+                            className="px-4 py-2 rounded-xl bg-[#0B1B36] text-white hover:bg-[#152d56] transition text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          >
+                            <ExternalLink size={13} /> View Screenshot Proof
+                          </button>
+                        </div>
+                      )}
+
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -757,12 +835,13 @@ function AdminConsoleContent() {
   );
 }
 
-export default function AdminConsole() {
+export default function AdminConsolePage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-mono flex items-center justify-center p-4">
-        <div className="text-xs text-[#536171] flex items-center gap-2">
-          <RefreshCw className="animate-spin" size={16} /> Loading Master Administrative Console...
+      <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] flex items-center justify-center font-mono text-xs">
+        <div className="flex items-center gap-3">
+          <RefreshCw size={16} className="animate-spin text-[#0B1B36]" />
+          <span>Initializing Admin Master Console...</span>
         </div>
       </div>
     }>

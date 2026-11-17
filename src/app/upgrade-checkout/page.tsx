@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, Upload, ArrowRight, AlertTriangle } from 'lucide-react';
 import { useFGGSystem } from '@/lib/useFGGSystem';
+import { getLeastLoadedSuperAgentId } from '../../../lib/superAgentLeastLoaded';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
 
@@ -65,10 +66,11 @@ function UpgradeCheckoutContent() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [assignedSuperAgentId, setAssignedSuperAgentId] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
-    const loadAgent = async () => {
+    const loadCheckoutData = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) {
         router.replace('/login');
@@ -81,12 +83,16 @@ function UpgradeCheckoutContent() {
         .eq('id', session.user.id)
         .maybeSingle();
 
+      // Fetch least loaded super agent node once on mount to lock assignment
+      const optimalAgentId = await getLeastLoadedSuperAgentId();
+
       if (isMounted) {
         setAgent(agentData);
+        setAssignedSuperAgentId(optimalAgentId);
         setLoading(false);
       }
     };
-    loadAgent();
+    loadCheckoutData();
     return () => {
       isMounted = false;
     };
@@ -97,7 +103,7 @@ function UpgradeCheckoutContent() {
       <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] flex items-center justify-center font-mono text-xs">
         <div className="flex items-center gap-3">
           <Loader2 size={16} className="animate-spin text-[#0B1B36]" />
-          <span>Loading Checkout Portal...</span>
+          <span>Loading Checkout Portal & Assigning Node...</span>
         </div>
       </div>
     );
@@ -159,6 +165,7 @@ function UpgradeCheckoutContent() {
       const { error: insertErr } = await supabase.from('deposits').insert([
         {
           agent_id: agent.id,
+          super_agent_id: assignedSuperAgentId, // Assigned least-loaded node
           amount: upgradeDifference,
           payment_method: paymentMethod,
           transaction_ref: `UPGRADE (${currentTierName} -> ${requestedTier}) - ${txRef.trim()}`,
@@ -171,7 +178,7 @@ function UpgradeCheckoutContent() {
       if (insertErr) throw insertErr;
 
       setMessage({
-        text: `Upgrade request from ${currentTierName} to ${requestedTier} (Difference: ETB ${upgradeDifference.toLocaleString()}) submitted! Awaiting admin verification.`,
+        text: `Upgrade request from ${currentTierName} to ${requestedTier} submitted successfully via node ${assignedSuperAgentId?.slice(0, 8)}... Awaiting admin verification.`,
         type: 'success',
       });
       setTimeout(() => router.push('/dashboard'), 2500);
@@ -208,7 +215,7 @@ function UpgradeCheckoutContent() {
           
           <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#071226] text-white rounded-3xl p-6 sm:p-8 border border-[#536171]/30 shadow-xl space-y-3">
             <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#AEB8C4] font-bold">
-              Differential Upgrade Pipeline
+              Differential Upgrade Pipeline (Least-Loaded Node Balanced)
             </span>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
               Upgrade to {requestedTier}
@@ -312,6 +319,11 @@ function UpgradeCheckoutContent() {
                   <div className="text-[11px] text-emerald-700 font-bold pt-1">
                     Net Upgrade Difference Due: ETB {upgradeDifference.toLocaleString()}
                   </div>
+                  {assignedSuperAgentId && (
+                    <div className="text-[10px] text-[#536171] pt-1">
+                      Assigned Processing Node: <span className="font-mono text-[#0B1B36]">{assignedSuperAgentId.slice(0, 12)}...</span>
+                    </div>
+                  )}
                 </div>
               </div>
 

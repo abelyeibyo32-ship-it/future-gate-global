@@ -90,7 +90,7 @@ export default function InvitationsPage() {
 
         const referredIds = referredAgents.map(a => a.id);
 
-        // 3. Fetch registration / deposit transaction amounts for these referred agents to compute 7% commission
+        // 3. Fetch registration / deposit transaction amounts for these referred agents to compute 6% commission
         const { data: txData, error: txError } = await supabase
           .from('transaction_requests')
           .select('amount, agent_id, status, type')
@@ -100,7 +100,7 @@ export default function InvitationsPage() {
         if (!txError && txData) {
           totalComm = txData.reduce((acc, tx) => {
             const feeAmount = Number(tx.amount || 0);
-            return acc + (feeAmount * 0.07); // 7% commission rule
+            return acc + (feeAmount * 0.06); // 6% commission rule
           }, 0);
         }
       }
@@ -181,7 +181,7 @@ export default function InvitationsPage() {
                 Expand Your Clearing Node
               </h1>
               <p className="text-xs text-[#AEB8C4] mt-2 max-w-xl leading-relaxed">
-                Invite new standard agents to FGG. Earn an automated 7% commission yield from their account tier fees directly into your balance.
+                Invite new standard agents to FGG. Earn an automated 6% commission yield from their account tier fees directly into your balance.
               </p>
             </div>
 
@@ -226,7 +226,7 @@ export default function InvitationsPage() {
 
             <div className="bg-white p-6 rounded-3xl border border-[#AEB8C4]/40 shadow-xs space-y-1">
               <div className="text-[10px] text-[#536171] uppercase tracking-wider font-bold flex items-center gap-2">
-                <DollarSign size={14} className="text-blue-600" /> Referral Earnings (7%)
+                <DollarSign size={14} className="text-blue-600" /> Referral Earnings (6%)
               </div>
               <div className="text-2xl sm:text-3xl font-extrabold text-[#0B1B36]">
                 ETB {stats.totalCommission.toLocaleString()}

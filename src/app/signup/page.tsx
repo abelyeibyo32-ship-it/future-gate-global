@@ -4,7 +4,7 @@
 import React, { useState, useEffect, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Globe, ShieldCheck, Upload, Smartphone, Building2, Layers, Lock, Copy, Check } from 'lucide-react';
+import { Loader2, Globe, ShieldCheck, Upload, Smartphone, Building2, Layers, Lock, Copy, Check, AlertCircle } from 'lucide-react';
 
 const CATEGORY_TIERS = [
   { 
@@ -116,7 +116,6 @@ function SignupContent() {
 
   useEffect(() => {
     const fetchSuperAgentsAndResolve = async () => {
-      // 1. Resolve referrer UUID querying the TEXT column 'referral_code'
       const activeRefCode = urlRefCode || localStorage.getItem('fgg_ref_code');
 
       if (activeRefCode) {
@@ -124,7 +123,7 @@ function SignupContent() {
         const { data: refAgent } = await supabase
           .from('agents')
           .select('id')
-          .ilike('referral_code', cleanRef) // FIXED: Query referral_code instead of referred_by
+          .ilike('referral_code', cleanRef)
           .maybeSingle();
 
         if (refAgent) {
@@ -135,7 +134,6 @@ function SignupContent() {
         localStorage.removeItem('fgg_referred_by');
       }
 
-      // 2. Fetch super agents pool
       const { data: nodesData } = await supabase.from('super_agents').select('*');
       
       let pool = [DEFAULT_FALLBACK_NODE];
@@ -186,6 +184,11 @@ function SignupContent() {
       return;
     }
 
+    if (!receiptFile) {
+      alert('Payment screenshot is strictly required! Please upload your transaction receipt before submitting.');
+      return;
+    }
+
     if (!agreedToTerms) {
       alert('You must agree to the Terms and Conditions to initialize your agent node.');
       return;
@@ -200,7 +203,6 @@ function SignupContent() {
 
     const cleanPhone = phoneNumber.trim();
 
-    // Check if phone number is already registered
     const { data: existingPhoneUser } = await supabase
       .from('agents')
       .select('id')
@@ -234,12 +236,13 @@ function SignupContent() {
     const normalizedTier = selectedTierObj?.id || selectedCategory;
     const newReferralCode = `FGG-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
-    let receiptUrl: string | null = null;
-    if (receiptFile) {
-      receiptUrl = await handleFileUpload(receiptFile);
+    const receiptUrl = await handleFileUpload(receiptFile);
+    if (!receiptUrl) {
+      alert('Failed to upload payment receipt. Please check your storage bucket permissions and try again.');
+      setLoading(false);
+      return;
     }
 
-    // Upsert agent record storing username, phone, email, referral code, and captured referrer UUID
     const { error: agentError } = await supabase.from('agents').upsert([
       { 
         id: userId, 
@@ -260,7 +263,6 @@ function SignupContent() {
       return;
     }
 
-    // Synchronously store user ID locally to avoid initial hydration dropouts
     localStorage.setItem('fgg_current_user_id', userId);
 
     const { error: reqError } = await supabase.from('transaction_requests').insert([
@@ -285,7 +287,6 @@ function SignupContent() {
       return;
     }
 
-    // Clear stored ref code after successful registration
     localStorage.removeItem('fgg_ref_code');
     localStorage.removeItem('fgg_referred_by');
 
@@ -502,7 +503,7 @@ function SignupContent() {
                   {activePayNumber}
                 </div>
                 <div className="text-[10px] text-amber-700 font-bold pt-1 border-t border-[#AEB8C4]/20">
-                  * Send exact entry capital (ETB {currentTierData?.fee.toLocaleString()}) to this live node account before submitting screenshot proof.
+                  ⚠️ Send exact entry capital (ETB {currentTierData?.fee.toLocaleString()}) to this live node account before uploading your payment receipt.
                 </div>
               </div>
 
@@ -520,16 +521,37 @@ function SignupContent() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="font-bold text-[#536171] uppercase text-[10px]">Upload Payment Screenshot</label>
-                <label className="flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] bg-[#F5F7FA] cursor-pointer transition font-bold text-[#536171]">
-                  <Upload size={16} />
-                  <span>{receiptFile ? receiptFile.name : 'Choose screenshot receipt...'}</span>
+              {/* MANDATORY PAYMENT SCREENSHOT UPLOAD */}
+              <div className="space-y-1.5 pt-1">
+                <div className="flex justify-between items-center">
+                  <label className="font-extrabold text-[#0B1B36] uppercase text-[10px] flex items-center gap-1">
+                    <AlertCircle size={13} className="text-rose-600" /> Payment Screenshot Proof <span className="text-rose-600">* Required</span>
+                  </label>
+                  {receiptFile && (
+                    <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
+                      <Check size={12} /> Attached Successfully
+                    </span>
+                  )}
+                </div>
+
+                <label className={`flex flex-col items-center justify-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed transition cursor-pointer font-bold text-xs ${
+                  receiptFile 
+                    ? 'bg-emerald-50/50 border-emerald-400 text-emerald-900' 
+                    : 'bg-[#F5F7FA] border-rose-300 hover:border-[#0B1B36] text-[#536171]'
+                }`}>
+                  <Upload size={20} className={receiptFile ? 'text-emerald-600' : 'text-[#0B1B36]'} />
+                  <span className="text-center font-bold">
+                    {receiptFile ? `Selected: ${receiptFile.name}` : 'Click here to upload payment transaction screenshot'}
+                  </span>
+                  <span className="text-[10px] font-normal opacity-75">
+                    {receiptFile ? 'Click to change file' : 'PNG, JPG, or JPEG accepted (Mandatory for approval)'}
+                  </span>
                   <input
                     type="file"
                     accept="image/*"
                     onChange={(e) => e.target.files && setReceiptFile(e.target.files[0])}
                     className="hidden"
+                    required
                   />
                 </label>
               </div>

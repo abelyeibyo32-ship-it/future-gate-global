@@ -23,46 +23,48 @@ export default function RegisterPage() {
     e.preventDefault();
     setLoading(true);
 
-    // 2. Sign up user with Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
+    try {
+      // 2. Sign up user with Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
 
-    if (authError || !authData.user) {
-      alert(`Signup Error: ${authError?.message}`);
-      setLoading(false);
-      return;
-    }
+      if (authError || !authData.user) {
+        throw new Error(authError?.message || 'Failed to authenticate user.');
+      }
 
-    const userId = authData.user.id;
-    
-    // 3. Retrieve stored referral code (if any)
-    const referredByCode = localStorage.getItem('fgg_referred_by') || null;
-    
-    // 4. Generate unique referral code for the new user
-    const newReferralCode = `FGG-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+      const userId = authData.user.id;
+      
+      // 3. Retrieve stored referral code (if any)
+      const referredByCode = localStorage.getItem('fgg_referred_by') || null;
+      
+      // 4. Generate unique referral code for the new user
+      const newReferralCode = `FGG-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
-    // 5. Insert agent profile into your database with the bound referral link
-    const { error: profileError } = await supabase.from('agents').insert([
-      {
-        id: userId,
-        capital_balance: 0,
-        total_earnings: 0,
-        referred_by: referredByCode,
-        referral_code: newReferralCode,
-      },
-    ]);
+      // 5. Insert agent profile into your database with the bound referral link
+      const { error: profileError } = await supabase.from('agents').insert([
+        {
+          id: userId,
+          capital_balance: 0,
+          total_earnings: 0,
+          referred_by: referredByCode,
+          referral_code: newReferralCode,
+        },
+      ]);
 
-    if (profileError) {
-      alert(`Profile Setup Error: ${profileError.message}`);
-    } else {
-      // Clear stored ref code after successful registration
+      if (profileError) {
+        throw new Error(profileError.message);
+      }
+
+      // Clear stored ref code after successful registration and route to dashboard
       localStorage.removeItem('fgg_referred_by');
       router.push('/dashboard');
+    } catch (err: any) {
+      alert(`Registration Error: ${err.message || err}`);
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
@@ -92,7 +94,7 @@ export default function RegisterPage() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full py-3.5 rounded-xl bg-[#0B1B36] text-white font-bold uppercase tracking-wider hover:bg-[#152d56] transition cursor-pointer"
+          className="w-full py-3.5 rounded-xl bg-[#0B1B36] text-white font-bold uppercase tracking-wider hover:bg-[#152d56] transition cursor-pointer disabled:opacity-50"
         >
           {loading ? 'Creating Node...' : 'Register Agent Node'}
         </button>
