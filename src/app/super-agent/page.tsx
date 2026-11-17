@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Users, Cpu, Lock, RefreshCw, PhoneCall, Smartphone, Building2, Menu, Globe, ShieldCheck, CheckCircle2, XCircle, Clock, AlertCircle } from 'lucide-react';
+import { Users, Cpu, Lock, RefreshCw, PhoneCall, Smartphone, Building2, Menu, Globe, ShieldCheck, CheckCircle2, XCircle, Clock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
@@ -53,7 +53,6 @@ export default function SuperAgentsDirectoryPage() {
   const fetchAllData = async () => {
     setLoading(true);
     try {
-      // 1. Fetch super agents
       const { data: nodesData, error: nodesError } = await supabase
         .from('super_agents')
         .select('*')
@@ -62,7 +61,6 @@ export default function SuperAgentsDirectoryPage() {
       if (nodesError) throw nodesError;
       if (nodesData) setSuperAgents(nodesData);
 
-      // 2. Fetch pending transaction requests assigned to super agents
       const { data: reqsData, error: reqsError } = await supabase
         .from('transaction_requests')
         .select('*')
@@ -82,7 +80,6 @@ export default function SuperAgentsDirectoryPage() {
   const handleApproveRequest = async (req: TransactionRequest) => {
     setProcessingId(req.id);
     try {
-      // 1. Update request status to approved
       const { error: updateError } = await supabase
         .from('transaction_requests')
         .update({ status: 'approved' })
@@ -90,7 +87,6 @@ export default function SuperAgentsDirectoryPage() {
 
       if (updateError) throw updateError;
 
-      // 2. If it's a deposit or registration, credit the agent's capital or balance
       if (req.type === 'registration' || req.type === 'deposit') {
         const { data: agentData } = await supabase
           .from('agents')
@@ -214,11 +210,9 @@ export default function SuperAgentsDirectoryPage() {
 
           {/* Pending Transaction Requests Section */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
-                <Clock size={16} className="text-amber-600" /> Pending Verification Queue ({transactionRequests.length})
-              </h2>
-            </div>
+            <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
+              <Clock size={16} className="text-amber-600" /> Pending Verification Queue ({transactionRequests.length})
+            </h2>
 
             {transactionRequests.length === 0 ? (
               <div className="bg-white p-8 rounded-3xl border border-[#AEB8C4]/40 text-center text-xs text-[#536171] shadow-xs">
