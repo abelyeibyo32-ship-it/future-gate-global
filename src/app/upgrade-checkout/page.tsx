@@ -4,7 +4,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Upload, ArrowRight, AlertTriangle, Copy, Check, Smartphone, Building2, Store, AlertCircle } from 'lucide-react';
+import { Loader2, Upload, ArrowRight, AlertTriangle, Copy, Check, Smartphone, Building2, Store, AlertCircle, Wrench, ArrowLeft } from 'lucide-react';
 import { useFGGSystem } from '@/lib/useFGGSystem';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
@@ -172,306 +172,59 @@ function UpgradeCheckoutContent() {
 
   const handleUpgradeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isValidUpgrade) {
-      setMessage({
-        text: `You are already on ${currentTierName} (Tier ${currentConfig.tierLevel}). Select a higher tier to upgrade.`,
-        type: 'error',
-      });
-      return;
-    }
-
-    if (!receiptFile) {
-      setMessage({ text: 'Payment screenshot proof is mandatory! Please upload your transaction receipt.', type: 'error' });
-      return;
-    }
-
-    if (!txRef.trim()) {
-      setMessage({ text: 'Please enter the transaction reference / receipt code.', type: 'error' });
-      return;
-    }
-
-    setSubmitting(true);
-    setMessage(null);
-
-    try {
-      const fileExt = receiptFile.name.split('.').pop();
-      const fileName = `upgrade_${agent.id}_${Date.now()}.${fileExt}`;
-      const filePath = `receipts/${fileName}`;
-
-      const { error: uploadErr } = await supabase.storage
-        .from('receipts')
-        .upload(filePath, receiptFile);
-
-      if (uploadErr) {
-        throw new Error(`Receipt upload failed: ${uploadErr.message}`);
-      }
-
-      const { data: publicUrlData } = supabase.storage
-        .from('receipts')
-        .getPublicUrl(filePath);
-      const receiptUrl = publicUrlData.publicUrl;
-
-      // SUBMITTED WITH PENDING STATUS — WAITING FOR ADMIN APPROVAL BEFORE ACCOUNT UPDATE
-      const { error: insertErr } = await supabase.from('transaction_requests').insert([
-        {
-          agent_id: agent.id,
-          super_agent_id: assignedSuperAgent.id,
-          super_agent_name: assignedSuperAgent.name,
-          tier: requestedTier,
-          type: 'deposit',
-          method: paymentMethod.toLowerCase(),
-          amount: upgradeDifference,
-          transaction_ref: `UPGRADE (${currentTierName} -> ${requestedTier}) - ${txRef.trim()}`,
-          receipt_url: receiptUrl,
-          status: 'pending',
-          created_at: new Date().toISOString(),
-        },
-      ]);
-
-      if (insertErr) throw insertErr;
-
-      setMessage({
-        text: `Upgrade request submitted successfully to node ${assignedSuperAgent.name}. Status is PENDING and will update upon admin verification.`,
-        type: 'success',
-      });
-      setTimeout(() => router.push('/dashboard'), 3000);
-    } catch (err: any) {
-      setMessage({ text: err.message || 'Upgrade submission failed.', type: 'error' });
-    } finally {
-      setSubmitting(false);
-    }
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-sans flex relative pb-24 lg:pb-0 selection:bg-[#0B1B36] selection:text-white">
+    <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-sans flex relative pb-24 lg:pb-0 selection:bg-[#0B1B36] selection:text-white overflow-hidden">
       
+      {/* UNDER CONSTRUCTION MODAL OVERLAY */}
+      <div className="fixed inset-0 z-50 bg-[#0B1B36]/80 backdrop-blur-md flex items-center justify-center p-4 font-mono">
+        <div className="bg-white rounded-3xl p-8 sm:p-10 max-w-md w-full border border-[#0B1B36]/20 shadow-2xl text-center space-y-6 animate-in fade-in zoom-in-95 duration-300">
+          <div className="w-16 h-16 bg-[#0B1B36]/5 text-[#0B1B36] rounded-2xl flex items-center justify-center mx-auto border border-[#0B1B36]/15 shadow-inner">
+            <Wrench size={32} className="animate-pulse" />
+          </div>
+
+          <div className="space-y-2">
+            <span className="px-3 py-1 rounded-full bg-[#0B1B36]/10 text-[#0B1B36] text-[10px] font-extrabold uppercase tracking-widest">
+              System Upgrade Gateway
+            </span>
+            <h2 className="text-2xl font-extrabold text-[#0B1B36] tracking-tight">Under Construction</h2>
+            <p className="text-xs text-[#0B1B36]/70 leading-relaxed">
+              The automated differential upgrade checkout pipeline is currently undergoing maintenance and infrastructure optimization. Please check back soon.
+            </p>
+          </div>
+
+          <div className="pt-2">
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="w-full py-4 rounded-xl bg-[#0B1B36] hover:bg-[#152d56] text-white font-bold text-xs uppercase tracking-wider transition shadow-lg cursor-pointer flex items-center justify-center gap-2"
+            >
+              <ArrowLeft size={16} /> Return to Operations Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* BACKGROUND CONTENT (BLURRED & LOCKED BEHIND MODAL) */}
       <Navbar
         activeCategory={currentTierName}
         isMobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
 
-      <main className="flex-1 flex flex-col min-w-0 bg-[#F5F7FA]">
+      <main className="flex-1 flex flex-col min-w-0 bg-[#F5F7FA] filter blur-sm pointer-events-none select-none">
         <header className="bg-white/95 backdrop-blur-md border-b border-[#AEB8C4]/40 px-4 sm:px-8 py-3.5 flex items-center justify-between sticky top-0 z-30 shadow-xs">
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl transition border border-[#AEB8C4]/30 cursor-pointer"
-              aria-label="Open menu"
-            >
-              <Store size={19} />
-            </button>
             <div className="text-xs font-mono text-[#536171] flex items-center gap-2.5">
               <span className="font-extrabold text-[#0B1B36]">Capital Upgrade Checkout</span>
-              <span className="text-[#AEB8C4] hidden sm:inline">/</span>
-              <span className="text-[#0B1B36] bg-[#0B1B36]/10 border border-[#0B1B36]/20 px-2.5 py-0.5 rounded-full text-[11px] font-bold hidden sm:inline-block">
-                Tier {currentConfig.tierLevel} → Tier {targetConfig.tierLevel} ({requestedTier})
-              </span>
             </div>
           </div>
         </header>
 
         <div className="p-4 sm:p-8 space-y-6 max-w-4xl mx-auto w-full">
-          
-          <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#071226] text-white rounded-3xl p-6 sm:p-8 border border-[#536171]/30 shadow-xl space-y-3">
-            <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#AEB8C4] font-bold">
-              Equal Round-Robin Rotation Pipeline (Pending Admin Approval)
-            </span>
-            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-              Upgrade to {requestedTier}
-            </h1>
-            <p className="text-xs font-mono text-[#AEB8C4] max-w-2xl">
-              Your existing <strong className="text-white">{currentTierName}</strong> capital is credited toward this upgrade. Account balances update strictly upon administrative verification.
-            </p>
+          <div className="bg-[#0B1B36] text-white rounded-3xl p-6 sm:p-8 shadow-xl space-y-3">
+            <h1 className="text-2xl sm:text-3xl font-extrabold">Upgrade to {requestedTier}</h1>
           </div>
-
-          {!isValidUpgrade && (
-            <div className="p-4 rounded-2xl text-xs font-mono border bg-amber-50 text-amber-900 border-amber-200 flex items-center gap-3">
-              <AlertTriangle size={18} className="text-amber-700 shrink-0" />
-              <span>
-                You are currently on <strong>{currentTierName} (Tier {currentConfig.tierLevel})</strong>. Please select a tier higher than Tier {currentConfig.tierLevel} from the Categories page.
-              </span>
-            </div>
-          )}
-
-          {message && (
-            <div className={`p-4 rounded-2xl text-xs font-mono border ${message.type === 'success' ? 'bg-[#0B1B36]/10 text-[#0B1B36] border-[#0B1B36]/30' : 'bg-rose-50 text-rose-800 border-rose-200'}`}>
-              {message.text}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            
-            {/* TIER DIFFERENCE BREAKDOWN */}
-            <div className="bg-white rounded-3xl p-6 border border-[#AEB8C4]/40 shadow-md space-y-4 md:col-span-1">
-              <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider">Upgrade Calculation</h2>
-              
-              <div className="space-y-2.5 font-mono text-xs pt-2 border-t border-[#AEB8C4]/20">
-                <div className="flex justify-between">
-                  <span className="text-[#536171]">Current Tier:</span>
-                  <span className="font-bold text-[#0B1B36]">{currentTierName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#536171]">Target Tier:</span>
-                  <span className="font-bold text-[#0B1B36]">{requestedTier}</span>
-                </div>
-                <div className="flex justify-between pt-2 border-t border-dashed border-[#AEB8C4]/40">
-                  <span className="text-[#536171]">Target Tier Fee:</span>
-                  <span className="font-bold text-[#0B1B36]">ETB {targetConfig.fee.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#536171]">Current Credit:</span>
-                  <span className="font-bold text-emerald-700">- ETB {currentConfig.fee.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between pt-2 border-t border-[#AEB8C4]/40 text-sm">
-                  <span className="font-extrabold text-[#0B1B36]">Amount Due:</span>
-                  <span className="font-extrabold text-emerald-700">ETB {upgradeDifference.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between pt-1 text-[11px]">
-                  <span className="text-[#536171]">New Daily Yield:</span>
-                  <span className="font-bold text-[#0B1B36]">ETB {dailyReturn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                </div>
-              </div>
-
-              <div className="space-y-2 pt-2 border-t border-[#AEB8C4]/20">
-                <div className="text-[10px] font-mono uppercase text-[#536171] font-bold">Unlocked Inventory</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {targetConfig.items.map((item) => (
-                    <span key={item} className="text-[10px] font-mono px-2 py-1 bg-[#F5F7FA] border border-[#AEB8C4]/30 rounded-lg text-[#0B1B36]">
-                      {item}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* PAYMENT & SUBMISSION FORM */}
-            <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-md space-y-6 md:col-span-2">
-              <h2 className="text-base font-extrabold text-[#0B1B36]">Super Agent Node Payment Gateway</h2>
-
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethod('Telebirr')}
-                    className={`py-3 px-4 rounded-xl border font-mono text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 ${
-                      paymentMethod === 'Telebirr' ? 'bg-[#0B1B36] text-white border-[#0B1B36]' : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
-                    }`}
-                  >
-                    <Smartphone size={15} /> Telebirr
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPaymentMethod('CBE')}
-                    className={`py-3 px-4 rounded-xl border font-mono text-xs font-bold transition cursor-pointer ${
-                      paymentMethod === 'CBE' ? 'bg-[#0B1B36] text-white border-[#0B1B36]' : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
-                    }`}
-                  >
-                    <Building2 size={15} /> CBE Bank
-                  </button>
-                </div>
-
-                {/* DYNAMIC SUPER AGENT NODE WALLET CARD */}
-                <div className="p-4 bg-[#F5F7FA] rounded-2xl font-mono text-xs space-y-2.5 border border-[#AEB8C4]/30">
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <span className="text-[10px] text-[#536171] uppercase font-bold block">Assigned Super Agent Node</span>
-                      <strong className="text-[#0B1B36] text-sm">{assignedSuperAgent.name}</strong> ({assignedSuperAgent.region || 'Central'})
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyAccount(activePayNumber)}
-                      className="px-3 py-1.5 rounded-xl bg-white border border-[#AEB8C4]/50 hover:bg-[#0B1B36] hover:text-white transition text-[10px] font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                    >
-                      {copiedAccount ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
-                      {copiedAccount ? 'Copied Account!' : 'Copy Account'}
-                    </button>
-                  </div>
-
-                  <div className="space-y-1 pt-1 border-t border-[#AEB8C4]/20">
-                    <span className="text-[10px] text-[#536171] uppercase font-bold">
-                      {paymentMethod === 'Telebirr' ? 'Node Telebirr Number' : 'Node CBE Account Number'}
-                    </span>
-                    <div className="text-sm font-extrabold select-all bg-white p-3 rounded-xl border border-[#AEB8C4]/40 text-[#0B1B36] font-mono">
-                      {activePayNumber}
-                    </div>
-                  </div>
-
-                  <div className="text-[11px] text-emerald-700 font-bold pt-1">
-                    Net Upgrade Difference Due: ETB {upgradeDifference.toLocaleString()}
-                  </div>
-                </div>
-              </div>
-
-              <form onSubmit={handleUpgradeSubmit} className="space-y-4 font-mono text-xs">
-                <div className="space-y-1">
-                  <label className="text-[#536171] uppercase font-bold text-[10px]">Transaction Reference / Receipt Code</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. FT263920..."
-                    value={txRef}
-                    onChange={(e) => setTxRef(e.target.value)}
-                    disabled={!isValidUpgrade}
-                    className="w-full px-4 py-3.5 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/40 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] disabled:opacity-50"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center">
-                    <label className="font-extrabold text-[#0B1B36] uppercase text-[10px] flex items-center gap-1">
-                      <AlertCircle size={13} className="text-rose-600" /> Payment Screenshot Proof <span className="text-rose-600 font-extrabold">* Required</span>
-                    </label>
-                    {receiptFile && (
-                      <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
-                        <Check size={12} /> Attached Successfully
-                      </span>
-                    )}
-                  </div>
-
-                  <label className={`flex flex-col items-center justify-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed transition cursor-pointer font-bold text-xs ${
-                    receiptFile 
-                      ? 'bg-emerald-50/50 border-emerald-400 text-emerald-900 shadow-xs' 
-                      : 'bg-rose-50/30 border-rose-300 hover:border-[#0B1B36] text-[#536171]'
-                  }`}>
-                    <Upload size={20} className={receiptFile ? 'text-emerald-600' : 'text-rose-600 animate-pulse'} />
-                    <span className="text-center font-bold">
-                      {receiptFile ? `Selected: ${receiptFile.name}` : 'Click here to upload payment transaction screenshot'}
-                    </span>
-                    <span className="text-[10px] font-normal opacity-75">
-                      {receiptFile ? 'Click to change file' : 'PNG, JPG, or JPEG accepted (Mandatory for upgrade)'}
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => e.target.files && setReceiptFile(e.target.files[0])}
-                      disabled={!isValidUpgrade}
-                      className="hidden"
-                      required
-                    />
-                  </label>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={submitting || !isValidUpgrade}
-                  className="w-full py-4 bg-[#0B1B36] hover:bg-[#152d56] text-white font-extrabold rounded-2xl transition uppercase tracking-wider shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {submitting ? (
-                    <>
-                      <Loader2 size={16} className="animate-spin" /> Submitting Request...
-                    </>
-                  ) : (
-                    <>
-                      Submit Upgrade Request (Pending Approval) <ArrowRight size={16} />
-                    </>
-                  )}
-                </button>
-              </form>
-            </div>
-
-          </div>
-
         </div>
       </main>
 

@@ -21,7 +21,9 @@ import {
   Cpu,
   PieChart,
   Check,
-  CheckCircle
+  CheckCircle,
+  ArrowUpRight,
+  Loader2
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useFGGSystem } from '@/lib/useFGGSystem';
@@ -31,8 +33,10 @@ import MobileBottomNav from '@/lib/components/MobileBottomNav';
 interface AgentRecord {
   id: string;
   username?: string;
-  tier: string;
-  capital_balance: number;
+  tier?: string;
+  active_category?: string;
+  vip_tier?: string;
+  capital_balance?: number;
   balance: number;
   referral_code: string;
 }
@@ -102,6 +106,24 @@ const MARKETPLACE_TIERS = [
   };
 });
 
+const DB_TIER_ALIASES: Record<string, string> = {
+  'tier 1': 'Electronics',
+  'tier 2': 'Furniture',
+  'tier 3': 'Solar Systems',
+  'tier 4': 'EV Bikes & Tuk-Tuks',
+  'tier 5': 'Real Estate',
+  'vip 1': 'Electronics',
+  'vip 2': 'Furniture',
+  'vip 3': 'Solar Systems',
+  'vip 4': 'EV Bikes & Tuk-Tuks',
+  'vip 5': 'Real Estate',
+  'electronics': 'Electronics',
+  'furniture': 'Furniture',
+  'solar systems': 'Solar Systems',
+  'ev bikes & tuk-tuks': 'EV Bikes & Tuk-Tuks',
+  'real estate': 'Real Estate',
+};
+
 export default function DashboardPage() {
   const router = useRouter();
   const { timeUntilReset } = useFGGSystem();
@@ -110,6 +132,7 @@ export default function DashboardPage() {
   const [notification, setNotification] = useState<string | null>(null);
 
   const [agent, setAgent] = useState<AgentRecord | null>(null);
+  const [loading, setLoading] = useState(true);
   const [tasksCompletedToday, setTasksCompletedToday] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [completingTask, setCompletingTask] = useState(false);
@@ -128,28 +151,23 @@ export default function DashboardPage() {
     if (manual) setIsRefreshing(true);
 
     const { data: authData } = await supabase.auth.getUser();
-    const userId = authData?.user?.id || '00000000-0000-0000-0000-000000000001';
+    const userId = authData?.user?.id;
 
-    const { data: agentData } = await supabase
+    if (!userId) {
+      router.replace('/login');
+      return;
+    }
+
+    const { data: agentData, error: agentError } = await supabase
       .from('agents')
       .select('*')
       .eq('id', userId)
       .maybeSingle();
 
-    if (agentData) {
+    if (agentData && !agentError) {
       setAgent(agentData as AgentRecord);
-    } else {
-      setAgent({
-        id: userId,
-        username: 'Operator Alpha',
-        tier: 'Solar Systems',
-        capital_balance: 43000,
-        balance: 1591.00,
-        referral_code: 'FGG-DEMO88',
-      });
     }
 
-    // Fetch today's task count using local YYYY-MM-DD date string
     const todayStr = new Date().toISOString().split('T')[0];
     const { data: taskRecord } = await supabase
       .from('agent_daily_tasks')
@@ -161,13 +179,13 @@ export default function DashboardPage() {
     if (taskRecord) {
       setTasksCompletedToday(taskRecord.completed_count);
     } else {
-      // Initialize record for today if it doesn't exist yet
       await supabase.from('agent_daily_tasks').insert([
         { agent_id: userId, task_date: todayStr, completed_count: 0 }
       ]);
       setTasksCompletedToday(0);
     }
 
+    setLoading(false);
     if (manual) {
       setIsRefreshing(false);
       showToast('Dashboard terminal synchronized.');
@@ -176,8 +194,10 @@ export default function DashboardPage() {
 
   const handleExecuteTask = async () => {
     if (completingTask || !agent) return;
-    const tierKey = agent.tier || 'Solar Systems';
-    const tierObj = MARKETPLACE_TIERS.find(t => t.id === tierKey) || MARKETPLACE_TIERS[2];
+
+    const rawDbTier = (agent.tier || agent.active_category || agent.vip_tier || 'Furniture').toLowerCase().trim();
+    const tierKey = DB_TIER_ALIASES[rawDbTier] || 'Furniture';
+    const tierObj = MARKETPLACE_TIERS.find(t => t.id === tierKey) || MARKETPLACE_TIERS[1];
 
     if (tasksCompletedToday >= tierObj.maxTasks) {
       showToast('Daily task quota fully exhausted for this cycle.');
@@ -191,7 +211,6 @@ export default function DashboardPage() {
     const newCount = tasksCompletedToday + 1;
     const todayStr = new Date().toISOString().split('T')[0];
 
-    // 1. Update agent balance
     const { error: agentError } = await supabase
       .from('agents')
       .update({ balance: newBalance })
@@ -203,7 +222,6 @@ export default function DashboardPage() {
       return;
     }
 
-    // 2. Upsert daily task count record
     const { error: taskError } = await supabase
       .from('agent_daily_tasks')
       .upsert({
@@ -219,7 +237,6 @@ export default function DashboardPage() {
       return;
     }
 
-    // 3. Log history item
     await supabase.from('task_history').insert([
       { agent_id: agent.id, tier: tierKey, commission_earned: earned }
     ]);
@@ -230,10 +247,23 @@ export default function DashboardPage() {
     setCompletingTask(false);
   };
 
-  if (!isMounted) return <div className="min-h-screen bg-[#F5F7FA]" />;
+  // Block rendering until data is fully verified to eliminate flash/flinch bugs
+  if (!isMounted || loading || !agent) {
+    return (
+      <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] flex items-center justify-center font-mono text-xs">
+        <div className="flex items-center gap-3">
+          <Loader2 size={16} className="animate-spin text-[#0B1B36]" />
+          <span>Synchronizing Node Ledger & Active Tier...</span>
+        </div>
+      </div>
+    );
+  }
 
-  const currentTierId = agent?.tier || 'Solar Systems';
-  const activeTierConfig = MARKETPLACE_TIERS.find(t => t.id === currentTierId) || MARKETPLACE_TIERS[2];
+  const rawCurrentTier = (agent?.tier || agent?.active_category || agent?.vip_tier || 'Furniture').toLowerCase().trim();
+  const currentTierId = DB_TIER_ALIASES[rawCurrentTier] || 'Furniture';
+  const activeTierConfig = MARKETPLACE_TIERS.find(t => t.id === currentTierId) || MARKETPLACE_TIERS[1];
+  
+  const lockedCapital = activeTierConfig.fee;
   const maxTasks = activeTierConfig.maxTasks;
   const progressPercent = Math.min(100, (tasksCompletedToday / maxTasks) * 100);
   const taskYieldValue = activeTierConfig.taskYieldNum;
@@ -284,7 +314,6 @@ export default function DashboardPage() {
 
         <div className="p-4 sm:p-8 space-y-6 max-w-6xl mx-auto w-full font-mono">
           
-          {/* TOP BANNER & WELCOME */}
           <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#122a52] text-white rounded-3xl p-6 sm:p-8 border border-white/10 shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
             <div className="space-y-3">
               <div className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-white/10 border border-white/20 text-[11px] font-extrabold shadow-inner">
@@ -309,7 +338,6 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* FINANCIAL STATS GRID */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-white p-6 rounded-3xl border border-[#0B1B36]/15 shadow-xs space-y-3">
               <div className="text-[10px] text-[#0B1B36]/60 uppercase font-bold flex items-center justify-between">
@@ -317,7 +345,7 @@ export default function DashboardPage() {
                 <span className="p-2 rounded-xl bg-[#0B1B36]/5 text-[#0B1B36]"><ShieldCheck size={16} /></span>
               </div>
               <div className="text-2xl font-extrabold text-[#0B1B36]">
-                ETB {(agent?.capital_balance || activeTierConfig.fee).toLocaleString()}
+                ETB {lockedCapital.toLocaleString()}
               </div>
               <div className="text-[11px] text-[#0B1B36]/70 flex items-center gap-1">
                 <Lock size={11} /> Base escrow security floor
@@ -351,10 +379,8 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* TASK QUOTA SECTION */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            {/* Daily Task Quota Card */}
             <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#0B1B36]/15 shadow-xs space-y-6 lg:col-span-2 flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
@@ -370,7 +396,6 @@ export default function DashboardPage() {
                 </p>
               </div>
 
-              {/* Progress Bar Visual */}
               <div className="space-y-2">
                 <div className="flex justify-between text-xs font-bold text-[#0B1B36]">
                   <span>Cycle Completion Rate</span>
@@ -384,7 +409,6 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Yield Accumulation Summary Box */}
               <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#0B1B36]/15 flex items-center justify-between text-xs">
                 <div>
                   <div className="text-[10px] text-[#0B1B36]/60 uppercase font-bold">Accumulated Today</div>
@@ -406,7 +430,6 @@ export default function DashboardPage() {
               </button>
             </div>
 
-            {/* Node Efficiency & Distribution Card */}
             <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#0B1B36]/15 shadow-xs space-y-6 flex flex-col justify-between">
               <div className="space-y-4">
                 <h3 className="text-base font-extrabold text-[#0B1B36] flex items-center gap-2">
@@ -441,7 +464,6 @@ export default function DashboardPage() {
 
           </div>
 
-          {/* MARKETPLACE PRICING & CONTRACT TIERS */}
           <div className="space-y-4 pt-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
               <div>
@@ -528,13 +550,12 @@ export default function DashboardPage() {
                           Locked Tier
                         </div>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => router.push('/wallet')}
-                          className="w-full py-3 rounded-xl bg-[#0B1B36] text-white hover:bg-[#152d56] transition font-extrabold text-xs text-center block shadow-md cursor-pointer"
+                        <Link
+                          href={`/upgrade-checkout?tier=${encodeURIComponent(tier.id)}`}
+                          className="w-full py-3 rounded-xl bg-[#0B1B36] text-white hover:bg-[#152d56] transition font-extrabold text-xs text-center flex items-center justify-center gap-1.5 shadow-md cursor-pointer"
                         >
-                          Select & Upgrade
-                        </button>
+                          Select & Upgrade <ArrowUpRight size={14} />
+                        </Link>
                       )}
                     </div>
                   </div>
