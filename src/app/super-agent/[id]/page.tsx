@@ -1,9 +1,7 @@
 // src/app/super-agent/[id]/page.tsx
 'use client';
 
-export const dynamic = 'force-dynamic';
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Lock, ShieldCheck, Loader2, Clock, CheckCircle2, XCircle, RefreshCw, Smartphone, Building2, ArrowLeft, ExternalLink, Image as ImageIcon, History, Filter } from 'lucide-react';
@@ -35,7 +33,7 @@ interface TransactionRequest {
   created_at?: string;
 }
 
-export default function SuperAgentPortal() {
+function SuperAgentPortalContent() {
   const params = useParams();
   const router = useRouter();
   const agentId = params?.id as string;
@@ -517,5 +515,19 @@ export default function SuperAgentPortal() {
 
       </div>
     </div>
+  );
+}
+
+export default function SuperAgentPortal() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-[#F5F7FA] flex items-center justify-center font-mono text-xs text-[#0B1B36]">
+        <div className="flex items-center gap-2">
+          <Loader2 className="animate-spin" size={18} /> Loading Super Agent Portal...
+        </div>
+      </div>
+    }>
+      <SuperAgentPortalContent />
+    </Suspense>
   );
 }

@@ -28,7 +28,8 @@ import {
   CreditCard,
   Phone,
   User,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Loader2
 } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 
@@ -729,99 +730,56 @@ function AdminConsoleContent() {
             </div>
 
             {filteredTransactions.length === 0 ? (
-              <div className="py-12 text-center text-xs text-[#536171] bg-[#F5F7FA] rounded-2xl border border-[#AEB8C4]/30">
-                No system transactions matching category <strong className="uppercase">{txFilter}</strong>.
+              <div className="bg-[#F5F7FA] p-12 rounded-3xl border border-[#AEB8C4]/30 text-center text-xs text-[#536171]">
+                No transactions found under filter <strong className="uppercase">{txFilter}</strong>.
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {filteredTransactions.map((tx) => {
-                  const senderAgent = agentMap.get(tx.agent_id);
-                  const approverNode = tx.super_agent_id ? superAgentMap.get(tx.super_agent_id) : null;
+                  const agent = agentMap.get(tx.agent_id);
+                  const node = tx.super_agent_id ? superAgentMap.get(tx.super_agent_id) : null;
 
                   return (
-                    <div key={tx.id} className="p-5 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 space-y-4 text-xs">
-                      
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#AEB8C4]/20 pb-3">
+                    <div key={tx.id} className="p-5 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 text-xs">
+                      <div className="space-y-1.5">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold uppercase ${
-                            tx.type === 'registration' ? 'bg-indigo-700 text-white' :
-                            tx.type === 'deposit' ? 'bg-[#0B1B36] text-white' : 'bg-emerald-600 text-white'
-                          }`}>
-                            {tx.type}
-                          </span>
-                          <span className="font-bold text-[#0B1B36]">{tx.transaction_ref || `REF-${tx.id.slice(0, 8)}`}</span>
-                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
-                            tx.status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
-                            tx.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                          <span className={`px-2.5 py-0.5 rounded-full font-bold uppercase text-[10px] ${
+                            tx.status === 'approved' ? 'bg-emerald-100 text-emerald-800' : tx.status === 'rejected' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
                           }`}>
                             {tx.status}
                           </span>
+                          <span className="px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-800 font-bold uppercase text-[10px]">
+                            {tx.type}
+                          </span>
+                          <span className="font-extrabold text-[#0B1B36]">{tx.transaction_ref || tx.id.slice(0, 8)}</span>
                         </div>
 
-                        <div className="text-right">
-                          <div className="text-sm font-extrabold text-[#0B1B36]">ETB {Number(tx.amount || 0).toLocaleString()}</div>
-                          <div className="text-[10px] text-[#536171]">{new Date(tx.created_at).toLocaleString()}</div>
+                        <div className="text-[#536171]">
+                          Agent ID: <strong className="text-[#0B1B36]">{agent?.username || tx.agent_id.slice(0, 8)}</strong> | Method: <strong className="uppercase">{tx.method}</strong>
                         </div>
+                        <div className="text-[#536171]">
+                          Assigned Node: <strong className="text-[#0B1B36]">{node?.name || tx.super_agent_name || 'System Central'}</strong>
+                        </div>
+                        <div className="text-emerald-700 font-bold">
+                          Amount: ETB {Number(tx.amount || 0).toLocaleString()}
+                        </div>
+
+                        {tx.receipt_url && (
+                          <div>
+                            <button
+                              onClick={() => setPreviewReceiptUrl(tx.receipt_url || null)}
+                              className="text-blue-600 underline font-bold hover:text-blue-800 text-[11px] cursor-pointer inline-flex items-center gap-1 mt-1"
+                            >
+                              <ImageIcon size={13} /> View Receipt Proof
+                            </button>
+                          </div>
+                        )}
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        
-                        <div className="p-3.5 rounded-xl bg-white border border-[#AEB8C4]/30 space-y-1.5">
-                          <div className="text-[10px] font-bold text-[#536171] uppercase flex items-center gap-1.5">
-                            <User size={13} className="text-[#0B1B36]" /> Sender / Operator Details
-                          </div>
-                          <div className="space-y-1 pt-0.5">
-                            <div className="flex justify-between">
-                              <span className="text-[#536171]">Username:</span>
-                              <strong className="text-[#0B1B36]">{senderAgent?.username || 'Unknown Operator'}</strong>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#536171]">Phone / Account Number:</span>
-                              <strong className="text-[#0B1B36] font-mono">{tx.sender_or_receiver_number || senderAgent?.phone || 'N/A'}</strong>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#536171]">Agent ID:</span>
-                              <strong className="text-slate-500 font-mono text-[10px]">{tx.agent_id}</strong>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="p-3.5 rounded-xl bg-white border border-[#AEB8C4]/30 space-y-1.5">
-                          <div className="text-[10px] font-bold text-[#536171] uppercase flex items-center gap-1.5">
-                            <Building2 size={13} className="text-indigo-600" /> Approver / Inviter Node Details
-                          </div>
-                          <div className="space-y-1 pt-0.5">
-                            <div className="flex justify-between">
-                              <span className="text-[#536171]">Node Name:</span>
-                              <strong className="text-[#0B1B36]">{tx.super_agent_name || approverNode?.name || 'Central Escrow Node'}</strong>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#536171]">Gateway Method:</span>
-                              <strong className="text-[#0B1B36] uppercase">{tx.method || 'telebirr'}</strong>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-[#536171]">Node ID:</span>
-                              <strong className="text-slate-500 font-mono text-[10px]">{tx.super_agent_id || 'sa-default'}</strong>
-                            </div>
-                          </div>
-                        </div>
-
+                      <div className="text-[11px] text-[#536171] md:text-right">
+                        <div>Created At:</div>
+                        <div className="font-bold text-[#0B1B36]">{new Date(tx.created_at).toLocaleString()}</div>
                       </div>
-
-                      {tx.receipt_url && (
-                        <div className="pt-1 flex items-center justify-between border-t border-[#AEB8C4]/20 mt-2 pt-3">
-                          <div className="text-[11px] text-[#536171] flex items-center gap-1">
-                            <ImageIcon size={14} className="text-emerald-600" /> Payment transaction receipt attached.
-                          </div>
-                          <button
-                            onClick={() => setPreviewReceiptUrl(tx.receipt_url || null)}
-                            className="px-4 py-2 rounded-xl bg-[#0B1B36] text-white hover:bg-[#152d56] transition text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
-                          >
-                            <ExternalLink size={13} /> View Screenshot Proof
-                          </button>
-                        </div>
-                      )}
-
                     </div>
                   );
                 })}
@@ -835,13 +793,12 @@ function AdminConsoleContent() {
   );
 }
 
-export default function AdminConsolePage() {
+export default function AdminConsole() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] flex items-center justify-center font-mono text-xs">
-        <div className="flex items-center gap-3">
-          <RefreshCw size={16} className="animate-spin text-[#0B1B36]" />
-          <span>Initializing Admin Master Console...</span>
+      <div className="min-h-screen bg-[#F5F7FA] flex items-center justify-center font-mono text-xs text-[#0B1B36]">
+        <div className="flex items-center gap-2">
+          <Loader2 className="animate-spin" size={18} /> Loading Admin Console...
         </div>
       </div>
     }>
