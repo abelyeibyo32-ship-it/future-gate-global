@@ -74,22 +74,6 @@ const DEFAULT_FALLBACK_NODE: SuperAgentNode = {
   cbe_account: '1000293848592',
 };
 
-const RESOLVE_ROUND_ROBIN_NODE = (pool: SuperAgentNode[]): SuperAgentNode => {
-  if (!pool || pool.length === 0) return DEFAULT_FALLBACK_NODE;
-  const lastIndexStr = localStorage.getItem('fgg_last_node_index');
-  let nextIndex = 0;
-
-  if (lastIndexStr !== null) {
-    const parsed = parseInt(lastIndexStr, 10);
-    nextIndex = (parsed + 1) % pool.length;
-  } else {
-    nextIndex = Math.floor(Math.random() * pool.length);
-  }
-
-  localStorage.setItem('fgg_last_node_index', nextIndex.toString());
-  return pool[nextIndex];
-};
-
 function SignupContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -115,6 +99,8 @@ function SignupContent() {
   const [copiedAccount, setCopiedAccount] = useState(false);
 
   useEffect(() => {
+    let isMounted = true;
+
     const fetchSuperAgentsAndResolve = async () => {
       const activeRefCode = urlRefCode || localStorage.getItem('fgg_ref_code');
 
@@ -126,7 +112,7 @@ function SignupContent() {
           .ilike('referral_code', cleanRef)
           .maybeSingle();
 
-        if (refAgent) {
+        if (refAgent && isMounted) {
           setResolvedReferrerId(refAgent.id);
           localStorage.setItem('fgg_referred_by', refAgent.id);
         }
@@ -134,21 +120,35 @@ function SignupContent() {
         localStorage.removeItem('fgg_referred_by');
       }
 
-      const { data: nodesData } = await supabase.from('super_agents').select('*');
+      const { data: nodesData } = await supabase
+        .from('super_agents')
+        .select('*')
+        .order('id', { ascending: true });
       
       let pool = [DEFAULT_FALLBACK_NODE];
       if (nodesData && nodesData.length > 0) {
         pool = nodesData as SuperAgentNode[];
-        setSuperAgentsPool(pool);
-      } else {
-        setSuperAgentsPool([DEFAULT_FALLBACK_NODE]);
       }
 
-      const balancedNode = RESOLVE_ROUND_ROBIN_NODE(pool);
-      setAssignedAgent(balancedNode);
+      if (isMounted) {
+        setSuperAgentsPool(pool);
+
+        const storageKey = 'fgg_strict_rotation_seq';
+        const lastSeq = sessionStorage.getItem(storageKey);
+        const nextSeq = lastSeq !== null ? parseInt(lastSeq, 10) + 1 : 0;
+        
+        sessionStorage.setItem(storageKey, nextSeq.toString());
+        const alternatingIndex = nextSeq % pool.length;
+        
+        setAssignedAgent(pool[alternatingIndex]);
+      }
     };
 
     fetchSuperAgentsAndResolve();
+
+    return () => {
+      isMounted = false;
+    };
   }, [urlRefCode]);
 
   const handleCopyAccount = (textToCopy: string) => {
@@ -184,8 +184,9 @@ function SignupContent() {
       return;
     }
 
+    // STRICT SCREENSHOT VALIDATION CHECK
     if (!receiptFile) {
-      alert('Payment screenshot is strictly required! Please upload your transaction receipt before submitting.');
+      alert('Payment screenshot proof is mandatory! Please upload your transaction receipt before submitting your registration.');
       return;
     }
 
@@ -347,7 +348,7 @@ function SignupContent() {
             <Layers size={16} className="text-blue-600" /> Standard Public Node Registration
           </div>
           <p className="text-[11px] text-blue-700 leading-relaxed">
-            Assigned to balanced node: <strong className="text-blue-900 font-bold">{assignedAgent.name}</strong> ({assignedAgent.region || 'Central'}). {resolvedReferrerId && <span className="block text-emerald-700 font-bold mt-0.5">✓ Valid referral link detected.</span>}
+            Assigned to alternating node: <strong className="text-blue-900 font-bold">{assignedAgent.name}</strong> ({assignedAgent.region || 'Central'}). {resolvedReferrerId && <span className="block text-emerald-700 font-bold mt-0.5">✓ Valid referral link detected.</span>}
           </p>
         </div>
 
@@ -521,11 +522,11 @@ function SignupContent() {
                 />
               </div>
 
-              {/* MANDATORY PAYMENT SCREENSHOT UPLOAD */}
+              {/* HIGHLY VISIBLE MANDATORY SCREENSHOT UPLOAD */}
               <div className="space-y-1.5 pt-1">
                 <div className="flex justify-between items-center">
                   <label className="font-extrabold text-[#0B1B36] uppercase text-[10px] flex items-center gap-1">
-                    <AlertCircle size={13} className="text-rose-600" /> Payment Screenshot Proof <span className="text-rose-600">* Required</span>
+                    <AlertCircle size={13} className="text-rose-600" /> Payment Screenshot Proof <span className="text-rose-600 font-extrabold">* Required</span>
                   </label>
                   {receiptFile && (
                     <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
@@ -536,15 +537,15 @@ function SignupContent() {
 
                 <label className={`flex flex-col items-center justify-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed transition cursor-pointer font-bold text-xs ${
                   receiptFile 
-                    ? 'bg-emerald-50/50 border-emerald-400 text-emerald-900' 
-                    : 'bg-[#F5F7FA] border-rose-300 hover:border-[#0B1B36] text-[#536171]'
+                    ? 'bg-emerald-50/50 border-emerald-400 text-emerald-900 shadow-xs' 
+                    : 'bg-rose-50/30 border-rose-300 hover:border-[#0B1B36] text-[#536171]'
                 }`}>
-                  <Upload size={20} className={receiptFile ? 'text-emerald-600' : 'text-[#0B1B36]'} />
+                  <Upload size={20} className={receiptFile ? 'text-emerald-600' : 'text-rose-600 animate-pulse'} />
                   <span className="text-center font-bold">
                     {receiptFile ? `Selected: ${receiptFile.name}` : 'Click here to upload payment transaction screenshot'}
                   </span>
                   <span className="text-[10px] font-normal opacity-75">
-                    {receiptFile ? 'Click to change file' : 'PNG, JPG, or JPEG accepted (Mandatory for approval)'}
+                    {receiptFile ? 'Click to change file' : 'PNG, JPG, or JPEG accepted (Mandatory for activation)'}
                   </span>
                   <input
                     type="file"
