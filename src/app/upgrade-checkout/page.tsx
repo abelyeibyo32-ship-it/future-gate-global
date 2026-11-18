@@ -4,7 +4,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Upload, ArrowRight, AlertTriangle, Copy, Check, Smartphone, Building2, Store } from 'lucide-react';
+import { Loader2, Upload, ArrowRight, AlertTriangle, Copy, Check, Smartphone, Building2, Store, AlertCircle } from 'lucide-react';
 import { useFGGSystem } from '@/lib/useFGGSystem';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
@@ -105,7 +105,6 @@ function UpgradeCheckoutContent() {
         .eq('id', session.user.id)
         .maybeSingle();
 
-      // Fetch all available Super Agent nodes ordered deterministically
       const { data: nodesData } = await supabase
         .from('super_agents')
         .select('*')
@@ -116,7 +115,6 @@ function UpgradeCheckoutContent() {
         pool = nodesData as SuperAgentNode[];
       }
 
-      // EQUAL ROUND-ROBIN ROTATION INDEX VIA SESSION STORAGE
       const storageKey = 'fgg_equal_rotation_seq';
       const lastSeq = sessionStorage.getItem(storageKey);
       const nextSeq = lastSeq !== null ? parseInt(lastSeq, 10) + 1 : 0;
@@ -181,10 +179,12 @@ function UpgradeCheckoutContent() {
       });
       return;
     }
+
     if (!receiptFile) {
-      setMessage({ text: 'Please attach your payment receipt screenshot.', type: 'error' });
+      setMessage({ text: 'Payment screenshot proof is mandatory! Please upload your transaction receipt.', type: 'error' });
       return;
     }
+
     if (!txRef.trim()) {
       setMessage({ text: 'Please enter the transaction reference / receipt code.', type: 'error' });
       return;
@@ -199,24 +199,28 @@ function UpgradeCheckoutContent() {
       const filePath = `receipts/${fileName}`;
 
       const { error: uploadErr } = await supabase.storage
-        .from('transaction-receipts')
+        .from('receipts')
         .upload(filePath, receiptFile);
 
-      let receiptUrl = null;
-      if (!uploadErr) {
-        const { data: publicUrlData } = supabase.storage
-          .from('transaction-receipts')
-          .getPublicUrl(filePath);
-        receiptUrl = publicUrlData.publicUrl;
+      if (uploadErr) {
+        throw new Error(`Receipt upload failed: ${uploadErr.message}`);
       }
 
-      const { error: insertErr } = await supabase.from('deposits').insert([
+      const { data: publicUrlData } = supabase.storage
+        .from('receipts')
+        .getPublicUrl(filePath);
+      const receiptUrl = publicUrlData.publicUrl;
+
+      // SUBMITTED WITH PENDING STATUS — WAITING FOR ADMIN APPROVAL BEFORE ACCOUNT UPDATE
+      const { error: insertErr } = await supabase.from('transaction_requests').insert([
         {
           agent_id: agent.id,
           super_agent_id: assignedSuperAgent.id,
           super_agent_name: assignedSuperAgent.name,
+          tier: requestedTier,
+          type: 'deposit',
+          method: paymentMethod.toLowerCase(),
           amount: upgradeDifference,
-          payment_method: paymentMethod,
           transaction_ref: `UPGRADE (${currentTierName} -> ${requestedTier}) - ${txRef.trim()}`,
           receipt_url: receiptUrl,
           status: 'pending',
@@ -227,10 +231,10 @@ function UpgradeCheckoutContent() {
       if (insertErr) throw insertErr;
 
       setMessage({
-        text: `Upgrade request from ${currentTierName} to ${requestedTier} submitted successfully via node ${assignedSuperAgent.name}. Awaiting admin verification.`,
+        text: `Upgrade request submitted successfully to node ${assignedSuperAgent.name}. Status is PENDING and will update upon admin verification.`,
         type: 'success',
       });
-      setTimeout(() => router.push('/dashboard'), 2500);
+      setTimeout(() => router.push('/dashboard'), 3000);
     } catch (err: any) {
       setMessage({ text: err.message || 'Upgrade submission failed.', type: 'error' });
     } finally {
@@ -271,13 +275,13 @@ function UpgradeCheckoutContent() {
           
           <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#071226] text-white rounded-3xl p-6 sm:p-8 border border-[#536171]/30 shadow-xl space-y-3">
             <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#AEB8C4] font-bold">
-              Equal Round-Robin Rotation Pipeline (Balanced Node Assignment)
+              Equal Round-Robin Rotation Pipeline (Pending Admin Approval)
             </span>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
               Upgrade to {requestedTier}
             </h1>
             <p className="text-xs font-mono text-[#AEB8C4] max-w-2xl">
-              Your existing <strong className="text-white">{currentTierName}</strong> capital (ETB {currentConfig.fee.toLocaleString()}) is credited toward this upgrade. Pay only the net difference below.
+              Your existing <strong className="text-white">{currentTierName}</strong> capital is credited toward this upgrade. Account balances update strictly upon administrative verification.
             </p>
           </div>
 
@@ -413,24 +417,39 @@ function UpgradeCheckoutContent() {
                   />
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-[#536171] uppercase font-bold text-[10px]">Upload Payment Receipt Screenshot * Required</label>
-                  <div className="relative border-2 border-dashed border-[#AEB8C4]/60 rounded-xl p-4 text-center bg-[#F5F7FA] hover:border-[#0B1B36] transition cursor-pointer">
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <label className="font-extrabold text-[#0B1B36] uppercase text-[10px] flex items-center gap-1">
+                      <AlertCircle size={13} className="text-rose-600" /> Payment Screenshot Proof <span className="text-rose-600 font-extrabold">* Required</span>
+                    </label>
+                    {receiptFile && (
+                      <span className="text-[10px] text-emerald-700 font-bold flex items-center gap-1">
+                        <Check size={12} /> Attached Successfully
+                      </span>
+                    )}
+                  </div>
+
+                  <label className={`flex flex-col items-center justify-center gap-2 px-4 py-4 rounded-2xl border-2 border-dashed transition cursor-pointer font-bold text-xs ${
+                    receiptFile 
+                      ? 'bg-emerald-50/50 border-emerald-400 text-emerald-900 shadow-xs' 
+                      : 'bg-rose-50/30 border-rose-300 hover:border-[#0B1B36] text-[#536171]'
+                  }`}>
+                    <Upload size={20} className={receiptFile ? 'text-emerald-600' : 'text-rose-600 animate-pulse'} />
+                    <span className="text-center font-bold">
+                      {receiptFile ? `Selected: ${receiptFile.name}` : 'Click here to upload payment transaction screenshot'}
+                    </span>
+                    <span className="text-[10px] font-normal opacity-75">
+                      {receiptFile ? 'Click to change file' : 'PNG, JPG, or JPEG accepted (Mandatory for upgrade)'}
+                    </span>
                     <input
                       type="file"
                       accept="image/*"
-                      onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
+                      onChange={(e) => e.target.files && setReceiptFile(e.target.files[0])}
                       disabled={!isValidUpgrade}
-                      className="absolute inset-0 opacity-0 cursor-pointer w-full h-full disabled:cursor-not-allowed"
+                      className="hidden"
                       required
                     />
-                    <div className="flex flex-col items-center justify-center space-y-1">
-                      <Upload size={18} className="text-[#536171]" />
-                      <span className="text-[#0B1B36] font-bold truncate max-w-xs">
-                        {receiptFile ? receiptFile.name : 'Click to attach payment receipt screenshot'}
-                      </span>
-                    </div>
-                  </div>
+                  </label>
                 </div>
 
                 <button
@@ -440,11 +459,11 @@ function UpgradeCheckoutContent() {
                 >
                   {submitting ? (
                     <>
-                      <Loader2 size={16} className="animate-spin" /> Submitting Upgrade Request...
+                      <Loader2 size={16} className="animate-spin" /> Submitting Request...
                     </>
                   ) : (
                     <>
-                      Submit Upgrade Request for ETB {upgradeDifference.toLocaleString()} <ArrowRight size={16} />
+                      Submit Upgrade Request (Pending Approval) <ArrowRight size={16} />
                     </>
                   )}
                 </button>
