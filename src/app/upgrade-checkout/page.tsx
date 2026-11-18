@@ -1,12 +1,12 @@
+// src/app/upgrade-checkout/page.tsx
 'use client';
-
 
 import { useState, useEffect, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Upload, ArrowRight, AlertTriangle } from 'lucide-react';
+import { Loader2, Upload, ArrowRight, AlertTriangle, Copy, Check, Smartphone, Building2, Store } from 'lucide-react';
 import { useFGGSystem } from '@/lib/useFGGSystem';
-import { getLeastLoadedSuperAgentId } from '@/lib/superAgentLoadBalancer';import Navbar from '@/lib/components/Navbar';
+import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
 
 const TIER_DETAILS: Record<string, { fee: number; tierLevel: number; tagline: string; items: string[] }> = {
@@ -50,6 +50,26 @@ const VIP_TO_CATEGORY: Record<string, string> = {
   'VIP 5': 'Real Estate',
 };
 
+interface SuperAgentNode {
+  id: string;
+  name: string;
+  tier: string;
+  region: string;
+  phone?: string;
+  telebirr_account?: string;
+  cbe_account?: string;
+}
+
+const DEFAULT_FALLBACK_NODE: SuperAgentNode = {
+  id: 'sa-default',
+  name: 'Central Escrow Node',
+  tier: 'Solar Systems',
+  region: 'Addis Ababa',
+  phone: '0911223344',
+  telebirr_account: '0911223344',
+  cbe_account: '1000293848592',
+};
+
 function UpgradeCheckoutContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -66,7 +86,9 @@ function UpgradeCheckoutContent() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [assignedSuperAgentId, setAssignedSuperAgentId] = useState<string | null>(null);
+  
+  const [assignedSuperAgent, setAssignedSuperAgent] = useState<SuperAgentNode>(DEFAULT_FALLBACK_NODE);
+  const [copiedAccount, setCopiedAccount] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -83,12 +105,29 @@ function UpgradeCheckoutContent() {
         .eq('id', session.user.id)
         .maybeSingle();
 
-      // Fetch least loaded super agent node once on mount to lock assignment
-      const optimalAgentId = await getLeastLoadedSuperAgentId();
+      // Fetch all available Super Agent nodes ordered deterministically
+      const { data: nodesData } = await supabase
+        .from('super_agents')
+        .select('*')
+        .order('id', { ascending: true });
+
+      let pool = [DEFAULT_FALLBACK_NODE];
+      if (nodesData && nodesData.length > 0) {
+        pool = nodesData as SuperAgentNode[];
+      }
+
+      // EQUAL ROUND-ROBIN ROTATION INDEX VIA SESSION STORAGE
+      const storageKey = 'fgg_equal_rotation_seq';
+      const lastSeq = sessionStorage.getItem(storageKey);
+      const nextSeq = lastSeq !== null ? parseInt(lastSeq, 10) + 1 : 0;
+      sessionStorage.setItem(storageKey, nextSeq.toString());
+
+      const equalRotatedIndex = nextSeq % pool.length;
+      const assignedNode = pool[equalRotatedIndex];
 
       if (isMounted) {
         setAgent(agentData);
-        setAssignedSuperAgentId(optimalAgentId);
+        setAssignedSuperAgent(assignedNode);
         setLoading(false);
       }
     };
@@ -98,18 +137,23 @@ function UpgradeCheckoutContent() {
     };
   }, [router]);
 
+  const handleCopyAccount = (textToCopy: string) => {
+    navigator.clipboard.writeText(textToCopy);
+    setCopiedAccount(true);
+    setTimeout(() => setCopiedAccount(false), 2500);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] flex items-center justify-center font-mono text-xs">
         <div className="flex items-center gap-3">
           <Loader2 size={16} className="animate-spin text-[#0B1B36]" />
-          <span>Loading Checkout Portal & Assigning Node...</span>
+          <span>Loading Checkout Portal & Balancing Node...</span>
         </div>
       </div>
     );
   }
 
-  // Resolve current tier from Supabase profile or local state
   const rawCurrentTier =
     agent?.active_category ||
     (agent?.vip_tier ? VIP_TO_CATEGORY[agent.vip_tier] : null) ||
@@ -119,10 +163,14 @@ function UpgradeCheckoutContent() {
   const currentTierName = TIER_DETAILS[rawCurrentTier] ? rawCurrentTier : 'Electronics';
   const currentConfig = TIER_DETAILS[currentTierName];
 
-  // Calculate net upgrade difference: Target Fee - Current Tier Fee
   const upgradeDifference = Math.max(0, targetConfig.fee - currentConfig.fee);
   const isValidUpgrade = targetConfig.tierLevel > currentConfig.tierLevel && upgradeDifference > 0;
   const dailyReturn = targetConfig.fee * 0.037;
+
+  const activePayNumber =
+    paymentMethod === 'Telebirr'
+      ? assignedSuperAgent.telebirr_account || assignedSuperAgent.phone || '0911223344'
+      : assignedSuperAgent.cbe_account || '1000293848592';
 
   const handleUpgradeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -165,7 +213,8 @@ function UpgradeCheckoutContent() {
       const { error: insertErr } = await supabase.from('deposits').insert([
         {
           agent_id: agent.id,
-          super_agent_id: assignedSuperAgentId, // Assigned least-loaded node
+          super_agent_id: assignedSuperAgent.id,
+          super_agent_name: assignedSuperAgent.name,
           amount: upgradeDifference,
           payment_method: paymentMethod,
           transaction_ref: `UPGRADE (${currentTierName} -> ${requestedTier}) - ${txRef.trim()}`,
@@ -178,7 +227,7 @@ function UpgradeCheckoutContent() {
       if (insertErr) throw insertErr;
 
       setMessage({
-        text: `Upgrade request from ${currentTierName} to ${requestedTier} submitted successfully via node ${assignedSuperAgentId?.slice(0, 8)}... Awaiting admin verification.`,
+        text: `Upgrade request from ${currentTierName} to ${requestedTier} submitted successfully via node ${assignedSuperAgent.name}. Awaiting admin verification.`,
         type: 'success',
       });
       setTimeout(() => router.push('/dashboard'), 2500);
@@ -201,10 +250,17 @@ function UpgradeCheckoutContent() {
       <main className="flex-1 flex flex-col min-w-0 bg-[#F5F7FA]">
         <header className="bg-white/95 backdrop-blur-md border-b border-[#AEB8C4]/40 px-4 sm:px-8 py-3.5 flex items-center justify-between sticky top-0 z-30 shadow-xs">
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl transition border border-[#AEB8C4]/30 cursor-pointer"
+              aria-label="Open menu"
+            >
+              <Store size={19} />
+            </button>
             <div className="text-xs font-mono text-[#536171] flex items-center gap-2.5">
               <span className="font-extrabold text-[#0B1B36]">Capital Upgrade Checkout</span>
-              <span className="text-[#AEB8C4]">/</span>
-              <span className="text-[#0B1B36] bg-[#0B1B36]/10 border border-[#0B1B36]/20 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
+              <span className="text-[#AEB8C4] hidden sm:inline">/</span>
+              <span className="text-[#0B1B36] bg-[#0B1B36]/10 border border-[#0B1B36]/20 px-2.5 py-0.5 rounded-full text-[11px] font-bold hidden sm:inline-block">
                 Tier {currentConfig.tierLevel} → Tier {targetConfig.tierLevel} ({requestedTier})
               </span>
             </div>
@@ -215,7 +271,7 @@ function UpgradeCheckoutContent() {
           
           <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#071226] text-white rounded-3xl p-6 sm:p-8 border border-[#536171]/30 shadow-xl space-y-3">
             <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#AEB8C4] font-bold">
-              Differential Upgrade Pipeline (Least-Loaded Node Balanced)
+              Equal Round-Robin Rotation Pipeline (Balanced Node Assignment)
             </span>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
               Upgrade to {requestedTier}
@@ -287,43 +343,59 @@ function UpgradeCheckoutContent() {
 
             {/* PAYMENT & SUBMISSION FORM */}
             <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-md space-y-6 md:col-span-2">
-              <h2 className="text-base font-extrabold text-[#0B1B36]">Merchant Transfer Details</h2>
+              <h2 className="text-base font-extrabold text-[#0B1B36]">Super Agent Node Payment Gateway</h2>
 
               <div className="space-y-3">
-                <div className="flex gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
                     onClick={() => setPaymentMethod('Telebirr')}
-                    className={`flex-1 py-3 rounded-xl border font-mono text-xs font-bold transition cursor-pointer ${
+                    className={`py-3 px-4 rounded-xl border font-mono text-xs font-bold transition cursor-pointer flex items-center justify-center gap-2 ${
                       paymentMethod === 'Telebirr' ? 'bg-[#0B1B36] text-white border-[#0B1B36]' : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
                     }`}
                   >
-                    Telebirr
+                    <Smartphone size={15} /> Telebirr
                   </button>
                   <button
                     type="button"
                     onClick={() => setPaymentMethod('CBE')}
-                    className={`flex-1 py-3 rounded-xl border font-mono text-xs font-bold transition cursor-pointer ${
+                    className={`py-3 px-4 rounded-xl border font-mono text-xs font-bold transition cursor-pointer ${
                       paymentMethod === 'CBE' ? 'bg-[#0B1B36] text-white border-[#0B1B36]' : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
                     }`}
                   >
-                    CBE Bank
+                    <Building2 size={15} /> CBE Bank
                   </button>
                 </div>
 
-                <div className="p-4 bg-[#F5F7FA] rounded-2xl font-mono text-xs space-y-1 border border-[#AEB8C4]/30">
-                  <div>Transfer to: <strong className="text-[#0B1B36]">Future Gate Global Official</strong></div>
-                  <div className="text-sm font-extrabold select-all bg-white p-2.5 rounded-xl border border-[#AEB8C4]/40 inline-block mt-1 text-[#0B1B36]">
-                    {paymentMethod === 'Telebirr' ? '0911223344' : '1000556677889'}
+                {/* DYNAMIC SUPER AGENT NODE WALLET CARD */}
+                <div className="p-4 bg-[#F5F7FA] rounded-2xl font-mono text-xs space-y-2.5 border border-[#AEB8C4]/30">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <span className="text-[10px] text-[#536171] uppercase font-bold block">Assigned Super Agent Node</span>
+                      <strong className="text-[#0B1B36] text-sm">{assignedSuperAgent.name}</strong> ({assignedSuperAgent.region || 'Central'})
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyAccount(activePayNumber)}
+                      className="px-3 py-1.5 rounded-xl bg-white border border-[#AEB8C4]/50 hover:bg-[#0B1B36] hover:text-white transition text-[10px] font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      {copiedAccount ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                      {copiedAccount ? 'Copied Account!' : 'Copy Account'}
+                    </button>
                   </div>
+
+                  <div className="space-y-1 pt-1 border-t border-[#AEB8C4]/20">
+                    <span className="text-[10px] text-[#536171] uppercase font-bold">
+                      {paymentMethod === 'Telebirr' ? 'Node Telebirr Number' : 'Node CBE Account Number'}
+                    </span>
+                    <div className="text-sm font-extrabold select-all bg-white p-3 rounded-xl border border-[#AEB8C4]/40 text-[#0B1B36] font-mono">
+                      {activePayNumber}
+                    </div>
+                  </div>
+
                   <div className="text-[11px] text-emerald-700 font-bold pt-1">
                     Net Upgrade Difference Due: ETB {upgradeDifference.toLocaleString()}
                   </div>
-                  {assignedSuperAgentId && (
-                    <div className="text-[10px] text-[#536171] pt-1">
-                      Assigned Processing Node: <span className="font-mono text-[#0B1B36]">{assignedSuperAgentId.slice(0, 12)}...</span>
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -342,7 +414,7 @@ function UpgradeCheckoutContent() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[#536171] uppercase font-bold text-[10px]">Upload Payment Receipt Screenshot</label>
+                  <label className="text-[#536171] uppercase font-bold text-[10px]">Upload Payment Receipt Screenshot * Required</label>
                   <div className="relative border-2 border-dashed border-[#AEB8C4]/60 rounded-xl p-4 text-center bg-[#F5F7FA] hover:border-[#0B1B36] transition cursor-pointer">
                     <input
                       type="file"
@@ -355,7 +427,7 @@ function UpgradeCheckoutContent() {
                     <div className="flex flex-col items-center justify-center space-y-1">
                       <Upload size={18} className="text-[#536171]" />
                       <span className="text-[#0B1B36] font-bold truncate max-w-xs">
-                        {receiptFile ? receiptFile.name : 'Click to attach payment receipt'}
+                        {receiptFile ? receiptFile.name : 'Click to attach payment receipt screenshot'}
                       </span>
                     </div>
                   </div>
