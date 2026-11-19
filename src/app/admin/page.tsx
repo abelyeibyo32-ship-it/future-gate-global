@@ -1,995 +1,1994 @@
-// src/app/admin/page.tsx
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ShieldAlert,
-  CheckCircle2,
-  XCircle,
-  Clock,
+  ShieldCheck,
   RefreshCw,
   Search,
-  ExternalLink,
-  Layers,
-  FileText,
-  DollarSign,
-  User,
-  Smartphone,
-  Check,
-  X,
-  Loader2,
-  Filter,
-  Image as ImageIcon,
-  Calendar,
-  Trash2,
-  CheckSquare,
-  Square,
-  ShieldCheck,
-  UserCheck,
-  UserPlus,
-  Building2,
-  Store,
+  CheckCircle2,
+  XCircle,
+  KeyRound,
   Plus,
-  Lock,
-  Eye,
-  Edit3,
-  Save,
-  Info
+  X,
+  ArrowUpRight,
+  ArrowDownLeft,
+  SlidersHorizontal,
+  CheckSquare,
+  UserPlus,
+  GitBranch,
+  Wallet,
+  Trash2,
+  AlertTriangle,
+  Coins,
+  ArrowUpDown,
+  Calendar,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
+type TransactionStatus = 'pending' | 'approved' | 'rejected' | string;
+type SortDirection = 'desc' | 'asc';
+
+interface AgentInfo {
+  id?: string;
+  username?: string | null;
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  tier?: string | null;
+  balance?: number | string | null;
+  created_at?: string | null;
+}
+
+interface AgentRecord {
+  id: string;
+  username?: string | null;
+  full_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  tier?: string | null;
+  balance?: number | string | null;
+  fgg_cap?: number | string | null;
+  fggCap?: number | string | null;
+  fgg_limit?: number | string | null;
+  fgg_balance?: number | string | null;
+  fgg?: number | string | null;
+  daily_cap?: number | string | null;
+  max_fgg?: number | string | null;
+  cap?: number | string | null;
+  status?: string | null;
+  referral_count?: number | null;
+  referred_by?: string | null;
+  referrer_id?: string | null;
+  invited_by?: string | null;
+  created_at?: string | null;
+}
+
+interface DailyTaskRow {
+  id?: string;
+  agent_id?: string | null;
+  created_at?: string | null;
+  reward_amount?: number | string | null;
+  commission_amount?: number | string | null;
+  amount?: number | string | null;
+  status?: string | null;
+}
+
+interface AgentCommissionBreakdown {
+  todayTasks: number;
+  totalTasks: number;
+  taskCommission: number;
+  referralCommission: number;
+  totalCommission: number;
+}
+
 interface TransactionRequest {
   id: string;
-  agent_id: string;
-  super_agent_id?: string;
-  super_agent_name?: string;
-  tier?: string;
-  type: string;
-  method: string;
-  amount: number;
-  transaction_ref: string;
-  receipt_url?: string;
-  status: 'pending' | 'approved' | 'rejected';
-  created_at: string;
-  agents?: {
-    username?: string;
-    phone?: string;
-    tier?: string;
-    balance?: number;
-  };
+  agent_id?: string | null;
+  type?: string;
+  tx_type?: string | null;
+  request_type?: string | null;
+  amount?: number | string | null;
+  fee_amount?: number | string | null;
+  net_amount?: number | string | null;
+  remaining_balance?: number | string | null;
+  status?: TransactionStatus;
+  reference?: string | null;
+  transaction_ref?: string | null;
+  notes?: string | null;
+  tier?: string | null;
+  created_at?: string | null;
+  agents?: AgentInfo | AgentInfo[] | null;
 }
 
 interface SuperAgentNode {
   id: string;
   name: string;
   region: string;
-  phone?: string;
-  telebirr_account?: string;
-  cbe_account?: string;
-  created_at?: string;
+  phone?: string | null;
+  telebirr_account?: string | null;
+  cbe_account?: string | null;
+  user_id?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+}
+
+interface DateGroup<T> {
+  dateKey: string;
+  dateLabel: string;
+  sortTimestamp: number;
+  items: T[];
+}
+
+const API_SUPER_AGENT_PATH = '/api/portal/admin/super-agent';
+const API_DELETE_AGENT_PATH = '/api/portal/admin/delete-agent';
+const DEFAULT_WITHDRAWAL_FEE_PERCENT = 3;
+const DEFAULT_TASK_COMMISSION_ETB = 10;
+const DEFAULT_REFERRAL_COMMISSION_ETB = 25;
+
+function parseNumericValue(val: unknown): number {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  if (typeof val === 'string') {
+    const cleaned = val.replace(/[^0-9.-]+/g, '');
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function roundMoney(value: number): number {
+  return Number((Number.isFinite(value) ? value : 0).toFixed(2));
+}
+
+function getTimestamp(isoString?: string | null): number {
+  if (!isoString) return 0;
+  const ts = new Date(isoString).getTime();
+  return Number.isNaN(ts) ? 0 : ts;
+}
+
+function compareByDateTime<T extends { created_at?: string | null }>(
+  a: T,
+  b: T,
+  direction: SortDirection
+): number {
+  const diff = getTimestamp(a.created_at) - getTimestamp(b.created_at);
+  return direction === 'desc' ? -diff : diff;
+}
+
+function formatDateTime(isoString?: string | null): string {
+  if (!isoString) return '-';
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getDateGroupInfo(isoString?: string | null): {
+  dateKey: string;
+  dateLabel: string;
+  dayStartTimestamp: number;
+} {
+  if (!isoString) {
+    return {
+      dateKey: 'no-date',
+      dateLabel: 'No Date Recorded',
+      dayStartTimestamp: 0,
+    };
+  }
+
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) {
+    return {
+      dateKey: 'no-date',
+      dateLabel: 'No Date Recorded',
+      dayStartTimestamp: 0,
+    };
+  }
+
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const day = d.getDate();
+
+  const dayStart = new Date(year, month, day, 0, 0, 0, 0);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const yesterdayStart = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() - 1,
+    0,
+    0,
+    0,
+    0
+  );
+
+  const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(
+    2,
+    '0'
+  )}`;
+
+  const formattedFullDate = dayStart.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
+  if (dayStart.getTime() === todayStart.getTime()) {
+    return {
+      dateKey,
+      dateLabel: `Today • ${formattedFullDate}`,
+      dayStartTimestamp: dayStart.getTime(),
+    };
+  }
+
+  if (dayStart.getTime() === yesterdayStart.getTime()) {
+    return {
+      dateKey,
+      dateLabel: `Yesterday • ${formattedFullDate}`,
+      dayStartTimestamp: dayStart.getTime(),
+    };
+  }
+
+  return {
+    dateKey,
+    dateLabel: formattedFullDate,
+    dayStartTimestamp: dayStart.getTime(),
+  };
+}
+
+function groupItemsByDate<T extends { created_at?: string | null }>(
+  sortedItems: T[],
+  direction: SortDirection
+): DateGroup<T>[] {
+  const map = new Map<string, DateGroup<T>>();
+
+  for (const item of sortedItems) {
+    const { dateKey, dateLabel, dayStartTimestamp } = getDateGroupInfo(item.created_at);
+    const existing = map.get(dateKey);
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      map.set(dateKey, {
+        dateKey,
+        dateLabel,
+        sortTimestamp: dayStartTimestamp,
+        items: [item],
+      });
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.dateKey === 'no-date') return 1;
+    if (b.dateKey === 'no-date') return -1;
+    const diff = a.sortTimestamp - b.sortTimestamp;
+    return direction === 'desc' ? -diff : diff;
+  });
+}
+
+function isSameUtcDay(isoString?: string | null): boolean {
+  if (!isoString) return false;
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getUTCFullYear() === now.getUTCFullYear() &&
+    d.getUTCMonth() === now.getUTCMonth() &&
+    d.getUTCDate() === now.getUTCDate()
+  );
+}
+
+function calculateAgentMetrics(
+  agentId: string,
+  taskRows: DailyTaskRow[],
+  referralCount: number
+): AgentCommissionBreakdown {
+  let todayTasks = 0;
+  let totalTasks = 0;
+  let rawTaskRewardSum = 0;
+  let foundExplicitReward = false;
+
+  for (const row of taskRows) {
+    if (!row.agent_id || String(row.agent_id) !== agentId) continue;
+    const rowStatus = (row.status || 'completed').toLowerCase();
+    if (rowStatus === 'rejected' || rowStatus === 'cancelled') continue;
+
+    totalTasks += 1;
+    if (isSameUtcDay(row.created_at)) {
+      todayTasks += 1;
+    }
+
+    const explicitReward =
+      row.commission_amount ?? row.reward_amount ?? row.amount ?? null;
+    if (explicitReward != null && Number.isFinite(parseNumericValue(explicitReward))) {
+      foundExplicitReward = true;
+      rawTaskRewardSum += parseNumericValue(explicitReward);
+    }
+  }
+
+  const taskCommission = roundMoney(
+    foundExplicitReward ? rawTaskRewardSum : totalTasks * DEFAULT_TASK_COMMISSION_ETB
+  );
+  const referralCommission = roundMoney(referralCount * DEFAULT_REFERRAL_COMMISSION_ETB);
+  const totalCommission = roundMoney(taskCommission + referralCommission);
+
+  return {
+    todayTasks,
+    totalTasks,
+    taskCommission,
+    referralCommission,
+    totalCommission,
+  };
+}
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'object') {
+    const e = err as Record<string, any>;
+    return e.message || e.details || e.hint || e.error_description || fallback;
+  }
+  return fallback;
+}
+
+function getStatusBadgeStyle(status?: string): string {
+  const normalized = (status || 'pending').toLowerCase();
+  if (normalized === 'approved' || normalized === 'active') {
+    return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+  }
+  if (normalized === 'rejected' || normalized === 'suspended' || normalized === 'inactive') {
+    return 'bg-rose-50 text-rose-700 border-rose-200';
+  }
+  return 'bg-amber-50 text-amber-700 border-amber-200';
 }
 
 export default function AdminDashboardPage() {
-  const router = useRouter();
-  const [isMounted, setIsMounted] = useState(false);
-  const [activeTab, setActiveTab] = useState<'transactions' | 'super_agents'>('transactions');
-  
-  // Transaction State
+  const [activeTab, setActiveTab] = useState<'agents' | 'transactions' | 'super-agents'>('agents');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+
+  // Raw activity rows for live metrics
+  const [taskRows, setTaskRows] = useState<DailyTaskRow[]>([]);
+
+  // Agents & live activity state
+  const [agents, setAgents] = useState<AgentRecord[]>([]);
+  const [loadingAgentsList, setLoadingAgentsList] = useState<boolean>(true);
+  const [referralCountMap, setReferralCountMap] = useState<Record<string, number>>({});
+  const [inviterMap, setInviterMap] = useState<Record<string, AgentRecord>>({});
+  const [invitedChildrenMap, setInvitedChildrenMap] = useState<Record<string, AgentRecord[]>>({});
+  const [selectedAgentForTree, setSelectedAgentForTree] = useState<AgentRecord | null>(null);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+  const [updatingAgentId, setUpdatingAgentId] = useState<string | null>(null);
+
+  // Deletion modals state
+  const [deletingAgentTarget, setDeletingAgentTarget] = useState<AgentRecord | null>(null);
+  const [isDeletingAgent, setIsDeletingAgent] = useState<boolean>(false);
+  const [confirmBulkDeleteOpen, setConfirmBulkDeleteOpen] = useState<boolean>(false);
+  const [isBulkDeletingAgents, setIsBulkDeletingAgents] = useState<boolean>(false);
+
+  const [agentActivityFilter, setAgentActivityFilter] = useState<
+    'all' | 'active-today' | 'with-referrals'
+  >('all');
+
+  // Transactions state
   const [transactions, setTransactions] = useState<TransactionRequest[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [notification, setNotification] = useState<string | null>(null);
-
+  const [loading, setLoading] = useState<boolean>(true);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [filterStatus, setFilterStatus] = useState<string>('pending');
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [selectedReceiptUrl, setSelectedReceiptUrl] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
-  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
-  // Super Agent Management State
+  // Super Agents state
   const [superAgents, setSuperAgents] = useState<SuperAgentNode[]>([]);
-  const [loadingAgents, setLoadingAgents] = useState(false);
-  const [newAgentName, setNewAgentName] = useState('');
-  const [newAgentRegion, setNewAgentRegion] = useState('');
-  const [newAgentPhone, setNewAgentPhone] = useState('');
-  const [newAgentTelebirr, setNewAgentTelebirr] = useState('');
-  const [newAgentCbe, setNewAgentCbe] = useState('');
-  const [adminPin, setAdminPin] = useState('');
-  const [addingAgent, setAddingAgent] = useState(false);
+  const [loadingAgents, setLoadingAgents] = useState<boolean>(false);
 
-  // Super Agent Detail & Edit State
-  const [selectedAgentDetail, setSelectedAgentDetail] = useState<SuperAgentNode | null>(null);
+  // Create Super Agent form state
+  const [newName, setNewName] = useState<string>('');
+  const [newRegion, setNewRegion] = useState<string>('');
+  const [newPhone, setNewPhone] = useState<string>('');
+  const [newTelebirr, setNewTelebirr] = useState<string>('');
+  const [newCbe, setNewCbe] = useState<string>('');
+  const [newPassword, setNewPassword] = useState<string>('');
+  const [creatingAgent, setCreatingAgent] = useState<boolean>(false);
+
+  // Edit / Reset Super Agent modal state
   const [editingAgent, setEditingAgent] = useState<SuperAgentNode | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editRegion, setEditRegion] = useState('');
-  const [editPhone, setEditPhone] = useState('');
-  const [editTelebirr, setEditTelebirr] = useState('');
-  const [editCbe, setEditCbe] = useState('');
-  const [editPin, setEditPin] = useState('');
-  const [updatingAgent, setUpdatingAgent] = useState(false);
+  const [editName, setEditName] = useState<string>('');
+  const [editRegion, setEditRegion] = useState<string>('');
+  const [editPhone, setEditPhone] = useState<string>('');
+  const [editTelebirr, setEditTelebirr] = useState<string>('');
+  const [editCbe, setEditCbe] = useState<string>('');
+  const [editStatus, setEditStatus] = useState<string>('active');
+  const [editPassword, setEditPassword] = useState<string>('');
+  const [savingEdit, setSavingEdit] = useState<boolean>(false);
+  const [deletingSuperAgent, setDeletingSuperAgent] = useState<boolean>(false);
+
+  // Toast notification
+  const [toast, setToast] = useState<{
+    message: string;
+    type: 'info' | 'success' | 'error';
+  } | null>(null);
+
+  const showToast = useCallback(
+    (message: string, type: 'info' | 'success' | 'error' = 'info') => {
+      setToast({ message, type });
+    },
+    []
+  );
 
   useEffect(() => {
-    setIsMounted(true);
-    fetchTransactions();
-    fetchSuperAgents();
-  }, []);
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
-  const showToast = (msg: string) => {
-    setNotification(msg);
-    setTimeout(() => setNotification(null), 3500);
-  };
-
-  const fetchTransactions = async (manual = false) => {
-    if (manual) setIsRefreshing(true);
-
+  const fetchAgentsAndActivity = useCallback(async () => {
+    setLoadingAgentsList(true);
     try {
-      const { data, error } = await supabase
-        .from('transaction_requests')
-        .select(`
-          *,
-          agents:agent_id (username, phone, tier, balance)
-        `)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      if (data) {
-        setTransactions(data as TransactionRequest[]);
-      }
-    } catch (err: any) {
-      console.error('Error fetching transactions:', err.message);
-      showToast('Failed to load transaction records.');
-    } finally {
-      setLoading(false);
-      if (manual) {
-        setIsRefreshing(false);
-        showToast('Admin ledger synchronized.');
-      }
-    }
-  };
-
-  const fetchSuperAgents = async () => {
-    setLoadingAgents(true);
-    try {
-      const { data, error } = await supabase
-        .from('super_agents')
-        .select('*')
-        .order('id', { ascending: true });
-
-      if (error) throw error;
-      if (data) {
-        setSuperAgents(data as SuperAgentNode[]);
-      }
-    } catch (err: any) {
-      console.error('Error fetching super agents:', err.message);
-    } finally {
-      setLoadingAgents(false);
-    }
-  };
-
-  const handleAddSuperAgent = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newAgentName.trim() || !newAgentRegion.trim()) {
-      showToast('Agent name and region are required.');
-      return;
-    }
-
-    if (adminPin.trim() !== '88888888') {
-      showToast('Invalid 8-figure security PIN code authorization.');
-      return;
-    }
-
-    setAddingAgent(true);
-    try {
-      const { error } = await supabase.from('super_agents').insert([
-        {
-          name: newAgentName.trim(),
-          region: newAgentRegion.trim(),
-          phone: newAgentPhone.trim() || null,
-          telebirr_account: newAgentTelebirr.trim() || null,
-          cbe_account: newAgentCbe.trim() || null,
-          created_at: new Date().toISOString(),
-        }
+      const [agentsRes, tasksRes, referralsRes] = await Promise.all([
+        supabase.from('agents').select('*'),
+        supabase.from('agent_daily_tasks').select('*'),
+        supabase.from('referrals').select('*'),
       ]);
 
-      if (error) throw error;
+      if (agentsRes.error) throw agentsRes.error;
+      const agentRows = (agentsRes.data || []) as AgentRecord[];
+      const loadedTasks = (!tasksRes.error && Array.isArray(tasksRes.data)
+        ? tasksRes.data
+        : []) as DailyTaskRow[];
 
-      showToast('Super Agent node registered successfully with PIN authorization.');
-      setNewAgentName('');
-      setNewAgentRegion('');
-      setNewAgentPhone('');
-      setNewAgentTelebirr('');
-      setNewAgentCbe('');
-      setAdminPin('');
-      fetchSuperAgents();
+      setAgents(agentRows);
+      setTaskRows(loadedTasks);
+
+      const agentLookup: Record<string, AgentRecord> = {};
+      for (const ag of agentRows) {
+        agentLookup[ag.id] = ag;
+      }
+
+      const refCounts: Record<string, number> = {};
+      const childTree: Record<string, AgentRecord[]> = {};
+      const inviterLookup: Record<string, AgentRecord> = {};
+
+      if (!referralsRes.error && Array.isArray(referralsRes.data) && referralsRes.data.length > 0) {
+        for (const r of referralsRes.data as Array<Record<string, any>>) {
+          const inviterId = String(
+            r.referrer_id || r.referred_by || r.inviter_id || r.agent_id || ''
+          );
+          const inviteeId = String(r.invitee_id || r.user_id || r.child_id || '');
+
+          if (inviterId) {
+            refCounts[inviterId] = (refCounts[inviterId] || 0) + 1;
+            if (inviteeId && agentLookup[inviteeId]) {
+              if (!childTree[inviterId]) childTree[inviterId] = [];
+              childTree[inviterId].push(agentLookup[inviteeId]);
+
+              if (agentLookup[inviterId]) {
+                inviterLookup[inviteeId] = agentLookup[inviterId];
+              }
+            }
+          }
+        }
+      } else {
+        for (const child of agentRows) {
+          const inviterId = child.referred_by || child.referrer_id || child.invited_by;
+          if (inviterId && agentLookup[inviterId]) {
+            const parent = agentLookup[inviterId];
+            inviterLookup[child.id] = parent;
+            refCounts[parent.id] = (refCounts[parent.id] || 0) + 1;
+
+            if (!childTree[parent.id]) childTree[parent.id] = [];
+            childTree[parent.id].push(child);
+          }
+        }
+        for (const ag of agentRows) {
+          if (
+            typeof ag.referral_count === 'number' &&
+            ag.referral_count > (refCounts[ag.id] || 0)
+          ) {
+            refCounts[ag.id] = ag.referral_count;
+          }
+        }
+      }
+
+      setReferralCountMap(refCounts);
+      setInviterMap(inviterLookup);
+      setInvitedChildrenMap(childTree);
     } catch (err: any) {
-      showToast(`Failed to add agent: ${err.message}`);
+      console.error('Error fetching agents activity:', err);
+      showToast(getErrorMessage(err, 'Failed to load agents activity.'), 'error');
     } finally {
-      setAddingAgent(false);
+      setLoadingAgentsList(false);
+    }
+  }, [showToast]);
+
+  const fetchTransactions = useCallback(
+    async (manual = false) => {
+      if (manual) setIsRefreshing(true);
+
+      try {
+        const { data, error } = await supabase
+          .from('transaction_requests')
+          .select(`
+            *,
+            agents:agent_id (*)
+          `);
+
+        if (error) throw error;
+        setTransactions((data || []) as TransactionRequest[]);
+      } catch (err: any) {
+        console.error('Error fetching transactions:', err);
+        showToast(getErrorMessage(err, 'Failed to load transaction records.'), 'error');
+      } finally {
+        setLoading(false);
+        if (manual) {
+          setIsRefreshing(false);
+          showToast('Admin ledger synchronized.', 'success');
+        }
+      }
+    },
+    [showToast]
+  );
+
+  const fetchSuperAgents = useCallback(
+    async (manual = false) => {
+      if (manual) setLoadingAgents(true);
+      else setLoadingAgents(true);
+
+      try {
+        const { data, error } = await supabase.from('super_agents').select('*');
+
+        if (error) throw error;
+        setSuperAgents((data || []) as SuperAgentNode[]);
+      } catch (err: any) {
+        console.error('Error fetching super agents:', err);
+        showToast(getErrorMessage(err, 'Failed to load Super Agent nodes.'), 'error');
+      } finally {
+        setLoadingAgents(false);
+      }
+    },
+    [showToast]
+  );
+
+  useEffect(() => {
+    fetchAgentsAndActivity();
+    fetchTransactions(false);
+    fetchSuperAgents(false);
+  }, [fetchAgentsAndActivity, fetchTransactions, fetchSuperAgents]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('admin-dashboard-live-activity')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agents' },
+        () => {
+          fetchAgentsAndActivity();
+          fetchTransactions(false);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_daily_tasks' },
+        () => {
+          fetchAgentsAndActivity();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'transaction_requests' },
+        () => {
+          fetchTransactions(false);
+          fetchAgentsAndActivity();
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'super_agents' },
+        () => {
+          fetchSuperAgents(false);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchAgentsAndActivity, fetchTransactions, fetchSuperAgents]);
+
+  const { todayTaskMap, totalTaskMap, commissionMap } = useMemo(() => {
+    const todayCounts: Record<string, number> = {};
+    const totalCounts: Record<string, number> = {};
+    const nextCommissionMap: Record<string, AgentCommissionBreakdown> = {};
+
+    for (const ag of agents) {
+      const metrics = calculateAgentMetrics(
+        ag.id,
+        taskRows,
+        referralCountMap[ag.id] || 0
+      );
+      todayCounts[ag.id] = metrics.todayTasks;
+      totalCounts[ag.id] = metrics.totalTasks;
+      nextCommissionMap[ag.id] = metrics;
+    }
+
+    return {
+      todayTaskMap: todayCounts,
+      totalTaskMap: totalCounts,
+      commissionMap: nextCommissionMap,
+    };
+  }, [agents, taskRows, referralCountMap]);
+
+  const handleUpdateAgentStatus = async (agentId: string, nextStatus: string) => {
+    setUpdatingAgentId(agentId);
+    try {
+      const { data, error } = await supabase
+        .from('agents')
+        .update({ status: nextStatus })
+        .eq('id', agentId)
+        .select('id, status');
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error('Status update was not applied (check RLS UPDATE policy on agents).');
+      }
+
+      setAgents((prev) =>
+        prev.map((ag) => (ag.id === agentId ? { ...ag, status: nextStatus } : ag))
+      );
+      showToast(`Agent status updated to ${nextStatus}.`, 'success');
+    } catch (err: any) {
+      console.error('Error updating agent status:', err);
+      showToast(getErrorMessage(err, 'Failed to update agent status.'), 'error');
+    } finally {
+      setUpdatingAgentId(null);
     }
   };
 
-  const handleOpenEditModal = (agent: SuperAgentNode) => {
+  const handleResetFilters = useCallback(() => {
+    setFilterStatus('pending');
+    setAgentActivityFilter('all');
+    setSearchQuery('');
+    setSortDirection('desc');
+    setSelectedIds([]);
+    setSelectedAgentIds([]);
+    showToast('Filters, sorting, and selection reset.', 'info');
+  }, [showToast]);
+
+  const handleGenerateTempPassword = useCallback(() => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789@#!';
+    let generated = '';
+    for (let i = 0; i < 12; i++) {
+      generated += chars[Math.floor(Math.random() * chars.length)];
+    }
+    setEditPassword(generated);
+    showToast('Temporary password generated.', 'info');
+  }, [showToast]);
+
+  const handleResetCreateForm = useCallback(() => {
+    setNewName('');
+    setNewRegion('');
+    setNewPhone('');
+    setNewTelebirr('');
+    setNewCbe('');
+    setNewPassword('');
+  }, []);
+
+  const deleteAgentsViaApi = async (ids: string[]) => {
+    const res = await fetch(API_DELETE_AGENT_PATH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+
+    if (res.status === 404) {
+      const deletedIds: string[] = [];
+      const errors: Array<{ id: string; message: string }> = [];
+
+      for (const id of ids) {
+        await supabase.from('agents').update({ referred_by: null }).eq('referred_by', id);
+        await supabase.from('agents').update({ referrer_id: null }).eq('referrer_id', id);
+        await supabase.from('agents').update({ invited_by: null }).eq('invited_by', id);
+        await supabase.from('agent_daily_tasks').delete().eq('agent_id', id);
+        await supabase
+          .from('referrals')
+          .delete()
+          .or(`referrer_id.eq.${id},invitee_id.eq.${id}`);
+        await supabase.from('transaction_requests').delete().eq('agent_id', id);
+
+        const { data, error } = await supabase
+          .from('agents')
+          .delete()
+          .eq('id', id)
+          .select('id');
+
+        if (error) {
+          errors.push({ id, message: error.message });
+        } else if (!data || data.length === 0) {
+          errors.push({
+            id,
+            message:
+              'Delete route returned 404 and client delete returned 0 rows (check RLS or add /api/portal/admin/delete-agent).',
+          });
+        } else {
+          deletedIds.push(id);
+        }
+      }
+
+      return { deletedIds, errors };
+    }
+
+    const payload = await res.json().catch(() => null);
+    if (!res.ok || !payload) {
+      throw new Error(
+        payload?.error || `Delete route failed (${res.status} ${res.statusText}).`
+      );
+    }
+
+    return {
+      deletedIds: Array.isArray(payload.deletedIds) ? (payload.deletedIds as string[]) : [],
+      errors: Array.isArray(payload.errors)
+        ? (payload.errors as Array<{ id: string; message: string }>)
+        : [],
+    };
+  };
+
+  // Single Delete Agent Account
+  const handleDeleteAgentAccount = async () => {
+    if (!deletingAgentTarget) return;
+
+    setIsDeletingAgent(true);
+    try {
+      const { deletedIds, errors } = await deleteAgentsViaApi([deletingAgentTarget.id]);
+      if (!deletedIds.includes(deletingAgentTarget.id)) {
+        throw new Error(errors[0]?.message || 'Failed to delete agent account.');
+      }
+
+      setAgents((prev) => prev.filter((a) => a.id !== deletingAgentTarget.id));
+      setSelectedAgentIds((prev) => prev.filter((id) => id !== deletingAgentTarget.id));
+      if (selectedAgentForTree?.id === deletingAgentTarget.id) {
+        setSelectedAgentForTree(null);
+      }
+      setDeletingAgentTarget(null);
+      showToast('Agent account permanently deleted.', 'success');
+
+      await fetchAgentsAndActivity();
+    } catch (err: any) {
+      console.error('Error deleting agent account:', err);
+      showToast(getErrorMessage(err, 'Failed to delete agent account.'), 'error');
+    } finally {
+      setIsDeletingAgent(false);
+    }
+  };
+
+  // Resilient Bulk Delete Agent Accounts
+  const handleBulkDeleteAgents = async () => {
+    if (selectedAgentIds.length === 0) return;
+
+    setIsBulkDeletingAgents(true);
+    const idsToDelete = [...selectedAgentIds];
+
+    try {
+      const { deletedIds, errors } = await deleteAgentsViaApi(idsToDelete);
+
+      if (deletedIds.length > 0) {
+        setAgents((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
+        setSelectedAgentIds((prev) => prev.filter((id) => !deletedIds.includes(id)));
+        await fetchAgentsAndActivity();
+      }
+
+      setConfirmBulkDeleteOpen(false);
+
+      if (errors.length === 0) {
+        showToast(
+          `Permanently deleted ${deletedIds.length} agent account${
+            deletedIds.length > 1 ? 's' : ''
+          }.`,
+          'success'
+        );
+      } else if (deletedIds.length > 0) {
+        showToast(
+          `Deleted ${deletedIds.length}/${idsToDelete.length}. Blocked: ${errors[0].message}`,
+          'error'
+        );
+      } else {
+        showToast(`Bulk delete failed: ${errors[0]?.message || 'Unknown error'}`, 'error');
+      }
+    } catch (err: any) {
+      console.error('Error bulk deleting agents:', err);
+      showToast(getErrorMessage(err, 'Failed to delete selected agent accounts.'), 'error');
+    } finally {
+      setIsBulkDeletingAgents(false);
+    }
+  };
+
+  // Delete Super Agent Node
+  const handleDeleteSuperAgentNode = async () => {
+    if (!editingAgent) return;
+
+    setDeletingSuperAgent(true);
+    try {
+      const res = await fetch(API_SUPER_AGENT_PATH, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: editingAgent.id }),
+      });
+
+      let payload: any = null;
+      try {
+        payload = await res.json();
+      } catch {
+        payload = null;
+      }
+
+      if (!res.ok || (payload && payload.success === false)) {
+        throw new Error(
+          payload?.error ||
+            `Super Agent DELETE failed (${res.status} ${res.statusText}). Check ${API_SUPER_AGENT_PATH}.`
+        );
+      }
+
+      setSuperAgents((prev) => prev.filter((item) => item.id !== editingAgent.id));
+      setEditingAgent(null);
+      showToast('Super Agent node deleted.', 'success');
+    } catch (err: any) {
+      console.error('Delete Super Agent error:', err);
+      showToast(getErrorMessage(err, 'Failed to delete Super Agent.'), 'error');
+    } finally {
+      setDeletingSuperAgent(false);
+    }
+  };
+
+  const applySingleApproval = async (
+    tx: TransactionRequest,
+    nextStatus: 'approved' | 'rejected'
+  ) => {
+    const currentStatus = (tx.status || 'pending').toLowerCase();
+    if (currentStatus !== 'pending') {
+      throw new Error(`Transaction is already ${currentStatus} and cannot be modified.`);
+    }
+
+    const amount = roundMoney(Math.max(0, parseNumericValue(tx.amount)));
+    const txType = (tx.type || tx.tx_type || tx.request_type || '').toLowerCase();
+    const feeRateDecimal = DEFAULT_WITHDRAWAL_FEE_PERCENT / 100;
+    const feeAmount =
+      txType === 'withdrawal' ? roundMoney(amount * feeRateDecimal) : 0;
+    const netAmount =
+      txType === 'withdrawal' ? roundMoney(Math.max(0, amount - feeAmount)) : amount;
+
+    let currentBalance = 0;
+    let agentExists = false;
+
+    if (tx.agent_id) {
+      const { data: agentRow, error: readErr } = await supabase
+        .from('agents')
+        .select('id, balance, tier')
+        .eq('id', tx.agent_id)
+        .maybeSingle();
+
+      if (readErr) throw readErr;
+      if (agentRow) {
+        agentExists = true;
+        currentBalance = roundMoney(parseNumericValue(agentRow.balance));
+      }
+    }
+
+    if (nextStatus === 'approved' && ['withdrawal', 'withdraw', 'payout'].includes(txType)) {
+      if (!agentExists) {
+        throw new Error(`Agent ${tx.agent_id} not found in public.agents.`);
+      }
+      if (amount > currentBalance) {
+        throw new Error(
+          `Insufficient balance (ETB ${currentBalance.toLocaleString()}) for withdrawal of ETB ${amount.toLocaleString()}.`
+        );
+      }
+    }
+
+    let nextBalance = currentBalance;
+    if (nextStatus === 'approved') {
+      if (['withdrawal', 'withdraw', 'payout'].includes(txType)) {
+        nextBalance = roundMoney(Math.max(0, currentBalance - amount));
+      } else if (['deposit', 'top_up', 'topup', 'credit', 'fund'].includes(txType)) {
+        nextBalance = roundMoney(currentBalance + amount);
+      }
+    }
+
+    const { error: txErr } = await supabase
+      .from('transaction_requests')
+      .update({ status: nextStatus })
+      .eq('id', tx.id)
+      .eq('status', 'pending');
+
+    if (txErr) throw txErr;
+
+    if (nextStatus === 'approved' && tx.agent_id && agentExists) {
+      const agentUpdate: Record<string, any> = { balance: nextBalance };
+      if (tx.tier) {
+        agentUpdate.tier = tx.tier;
+      }
+
+      const { error: agentErr } = await supabase
+        .from('agents')
+        .update(agentUpdate)
+        .eq('id', tx.agent_id);
+
+      if (agentErr) throw agentErr;
+
+      const metaUpdate: Record<string, any> = {
+        remaining_balance: nextBalance,
+        balance_applied: true,
+      };
+      if (['withdrawal', 'withdraw', 'payout'].includes(txType)) {
+        metaUpdate.fee_amount = feeAmount;
+        metaUpdate.net_amount = netAmount;
+      }
+
+      const { error: metaErr } = await supabase
+        .from('transaction_requests')
+        .update(metaUpdate)
+        .eq('id', tx.id);
+
+      if (metaErr) {
+        console.warn('Optional transaction metadata columns skipped:', metaErr.message);
+      }
+    }
+
+    return { nextBalance, feeAmount, netAmount, amount, txType };
+  };
+
+  const handleUpdateTransactionStatus = async (
+    id: string,
+    nextStatus: 'approved' | 'rejected'
+  ) => {
+    const targetTx = transactions.find((item) => item.id === id);
+    if (!targetTx) return;
+
+    setProcessingId(id);
+    try {
+      const { nextBalance, feeAmount, netAmount, amount, txType } =
+        await applySingleApproval(targetTx, nextStatus);
+
+      await Promise.all([fetchTransactions(false), fetchAgentsAndActivity()]);
+      setSelectedIds((prev) => prev.filter((item) => item !== id));
+
+      const isWithdrawal = ['withdrawal', 'withdraw', 'payout'].includes(txType);
+
+      showToast(
+        nextStatus === 'approved'
+          ? `Approved ${txType || 'request'} of ETB ${amount.toLocaleString()}${
+              isWithdrawal
+                ? ` (${DEFAULT_WITHDRAWAL_FEE_PERCENT}% Fee: ETB ${feeAmount.toLocaleString()}, Net: ETB ${netAmount.toLocaleString()})`
+                : ''
+            } • Balance: ETB ${nextBalance.toLocaleString()}.`
+          : `Transaction marked as rejected.`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Error updating transaction:', err);
+      showToast(
+        getErrorMessage(err, `Failed to mark transaction as ${nextStatus}.`),
+        'error'
+      );
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleBulkStatusUpdate = async (nextStatus: 'approved' | 'rejected') => {
+    if (selectedIds.length === 0) return;
+    setProcessingId('bulk');
+
+    try {
+      const eligibleTxs = transactions.filter(
+        (tx) =>
+          selectedIds.includes(tx.id) &&
+          (tx.status || 'pending').toLowerCase() === 'pending'
+      );
+
+      if (eligibleTxs.length === 0) {
+        throw new Error('Only pending transactions can be approved or rejected.');
+      }
+
+      for (const tx of eligibleTxs) {
+        await applySingleApproval(tx, nextStatus);
+      }
+
+      await Promise.all([fetchTransactions(false), fetchAgentsAndActivity()]);
+      setSelectedIds([]);
+      showToast(
+        `Updated ${eligibleTxs.length} pending transaction${
+          eligibleTxs.length > 1 ? 's' : ''
+        } to ${nextStatus}.`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Bulk update failed:', err);
+      showToast(getErrorMessage(err, 'Bulk transaction update failed.'), 'error');
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleCreateSuperAgent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newName.trim() || !newRegion.trim()) {
+      showToast('Name and region are required.', 'error');
+      return;
+    }
+
+    setCreatingAgent(true);
+    try {
+      const res = await fetch(API_SUPER_AGENT_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newName.trim(),
+          region: newRegion.trim(),
+          phone: newPhone.trim() || null,
+          telebirr_account: newTelebirr.trim() || null,
+          cbe_account: newCbe.trim() || null,
+          password: newPassword.trim() || undefined,
+        }),
+      });
+
+      const payload = await res.json();
+      if (!res.ok || !payload.success) {
+        throw new Error(payload?.error || 'Failed to create Super Agent.');
+      }
+
+      if (payload.data) {
+        setSuperAgents((prev) => [payload.data as SuperAgentNode, ...prev]);
+      } else {
+        await fetchSuperAgents(false);
+      }
+
+      handleResetCreateForm();
+      showToast('Super Agent created successfully.', 'success');
+    } catch (err: any) {
+      console.error('Create Super Agent error:', err);
+      showToast(getErrorMessage(err, 'Failed to create Super Agent.'), 'error');
+    } finally {
+      setCreatingAgent(false);
+    }
+  };
+
+  const openEditAgentModal = (agent: SuperAgentNode) => {
     setEditingAgent(agent);
     setEditName(agent.name || '');
     setEditRegion(agent.region || '');
     setEditPhone(agent.phone || '');
     setEditTelebirr(agent.telebirr_account || '');
     setEditCbe(agent.cbe_account || '');
-    setEditPin('');
+    setEditStatus(agent.status || 'active');
+    setEditPassword('');
   };
 
-  const handleUpdateSuperAgent = async (e: React.FormEvent) => {
+  const handleSaveAgentChanges = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAgent) return;
 
-    if (editPin.trim() !== '88888888') {
-      showToast('Invalid 8-figure security PIN code authorization for editing.');
-      return;
-    }
-
-    setUpdatingAgent(true);
+    setSavingEdit(true);
     try {
-      const { error } = await supabase
-        .from('super_agents')
-        .update({
+      const res = await fetch(API_SUPER_AGENT_PATH, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingAgent.id,
           name: editName.trim(),
           region: editRegion.trim(),
           phone: editPhone.trim() || null,
           telebirr_account: editTelebirr.trim() || null,
           cbe_account: editCbe.trim() || null,
-        })
-        .eq('id', editingAgent.id);
+          user_id: editingAgent.user_id ?? null,
+          status: editStatus,
+          newPassword: editPassword.trim() || undefined,
+        }),
+      });
 
-      if (error) throw error;
-
-      showToast('Super Agent node updated successfully.');
-      setEditingAgent(null);
-      fetchSuperAgents();
-    } catch (err: any) {
-      showToast(`Update failed: ${err.message}`);
-    } finally {
-      setUpdatingAgent(false);
-    }
-  };
-
-  const handleDeleteSuperAgent = async (agentId: string) => {
-    if (!window.confirm('Are you sure you want to remove this Super Agent node from the rotation pool?')) {
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from('super_agents')
-        .delete()
-        .eq('id', agentId);
-
-      if (error) throw error;
-
-      showToast('Super Agent node removed successfully.');
-      setSuperAgents(prev => prev.filter(a => a.id !== agentId));
-      setSelectedAgentDetail(null);
-      setEditingAgent(null);
-    } catch (err: any) {
-      showToast(`Deletion failed: ${err.message}`);
-    }
-  };
-
-  const handleUpdateStatus = async (txId: string, agentId: string, tierName: string, amount: number, newStatus: 'approved' | 'rejected') => {
-    setProcessingId(txId);
-
-    try {
-      const adminName = 'System Administrator / Super Node';
-
-      const { error: txError } = await supabase
-        .from('transaction_requests')
-        .update({ 
-          status: newStatus,
-          super_agent_name: adminName 
-        })
-        .eq('id', txId);
-
-      if (txError) throw txError;
-
-      if (newStatus === 'approved' && tierName) {
-        const { error: agentError } = await supabase
-          .from('agents')
-          .update({ 
-            tier: tierName,
-            active_category: tierName
-          })
-          .eq('id', agentId);
-
-        if (agentError) throw agentError;
+      const payload = await res.json();
+      if (!res.ok || !payload.success) {
+        throw new Error(payload?.error || 'Failed to update Super Agent.');
       }
 
-      showToast(`Transaction ${newStatus} by ${adminName}.`);
-      fetchTransactions();
+      setSuperAgents((prev) =>
+        prev.map((item) =>
+          item.id === editingAgent.id
+            ? ({ ...item, ...(payload.data || {}) } as SuperAgentNode)
+            : item
+        )
+      );
+
+      const passwordWasReset = Boolean(editPassword.trim());
+      setEditingAgent(null);
+      setEditPassword('');
+      showToast(
+        passwordWasReset
+          ? 'Super Agent profile and login password reset.'
+          : 'Super Agent updated.',
+        'success'
+      );
     } catch (err: any) {
-      showToast(`Action failed: ${err.message}`);
+      console.error('Update Super Agent error:', err);
+      showToast(getErrorMessage(err, 'Failed to update Super Agent.'), 'error');
     } finally {
-      setProcessingId(null);
+      setSavingEdit(false);
     }
   };
 
-  const handleDeleteTransaction = async (txId: string) => {
-    if (!window.confirm('Are you sure you want to permanently delete this transaction record?')) {
-      return;
-    }
+  const stats = useMemo(() => {
+    const activeTodayAgents = agents.filter((a) => (todayTaskMap[a.id] || 0) > 0).length;
+    const totalReferrals = Object.values(referralCountMap).reduce((sum, c) => sum + c, 0);
+    const totalAgentBalances = roundMoney(
+      agents.reduce((sum, a) => sum + parseNumericValue(a.balance), 0)
+    );
 
-    setProcessingId(txId);
+    const totalFggCap = roundMoney(
+      agents.reduce((sum, a) => {
+        const record = a as Record<string, unknown>;
+        const rawCap =
+          record.fgg_cap ??
+          record.fggCap ??
+          record.fgg_limit ??
+          record.fgg_balance ??
+          record.fgg ??
+          record.daily_cap ??
+          record.max_fgg ??
+          record.cap ??
+          0;
+        return sum + parseNumericValue(rawCap);
+      }, 0)
+    );
 
-    try {
-      const { error } = await supabase
-        .from('transaction_requests')
-        .delete()
-        .eq('id', txId);
+    const getTxType = (tx: TransactionRequest) =>
+      String(tx.type || tx.tx_type || tx.request_type || '')
+        .trim()
+        .toLowerCase();
 
-      if (error) throw error;
+    const isExcludedStatus = (status?: string | null) => {
+      const normalized = String(status || '').trim().toLowerCase();
+      return ['rejected', 'cancelled', 'canceled', 'failed', 'declined'].includes(normalized);
+    };
 
-      showToast('Transaction record deleted successfully.');
-      setTransactions(prev => prev.filter(t => t.id !== txId));
-      setSelectedIds(prev => prev.filter(id => id !== txId));
-    } catch (err: any) {
-      showToast(`Deletion failed: ${err.message}`);
-    } finally {
-      setProcessingId(null);
-    }
-  };
+    const totalDeposits = roundMoney(
+      transactions
+        .filter((t) => {
+          const type = getTxType(t);
+          const matchesDeposit =
+            type.includes('deposit') ||
+            type.includes('top') ||
+            type.includes('credit') ||
+            type.includes('fund') ||
+            type.includes('recharge');
+          return matchesDeposit && !isExcludedStatus(t.status);
+        })
+        .reduce((sum, t) => sum + parseNumericValue(t.amount), 0)
+    );
 
-  const handleToggleSelect = (id: string) => {
-    setSelectedIds(prev =>
-      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    const totalWithdrawals = roundMoney(
+      transactions
+        .filter((t) => {
+          const type = getTxType(t);
+          const matchesWithdrawal =
+            type.includes('withdraw') || type.includes('payout') || type.includes('cash_out');
+          return matchesWithdrawal && !isExcludedStatus(t.status);
+        })
+        .reduce((sum, t) => sum + parseNumericValue(t.amount), 0)
+    );
+
+    const pendingCount = transactions.filter(
+      (t) => (t.status || 'pending').toLowerCase() === 'pending'
+    ).length;
+
+    return {
+      activeTodayAgents,
+      totalReferrals,
+      totalAgentBalances,
+      totalFggCap,
+      totalDeposits,
+      totalWithdrawals,
+      pendingCount,
+    };
+  }, [agents, todayTaskMap, referralCountMap, transactions]);
+
+  const filteredAgents = useMemo(() => {
+    return agents
+      .filter((ag) => {
+        const todayTasks = todayTaskMap[ag.id] || 0;
+        const referrals = referralCountMap[ag.id] || 0;
+
+        if (agentActivityFilter === 'active-today' && todayTasks === 0) return false;
+        if (agentActivityFilter === 'with-referrals' && referrals === 0) return false;
+
+        if (!searchQuery.trim()) return true;
+        const q = searchQuery.trim().toLowerCase();
+        const inviterName = inviterMap[ag.id]?.full_name || inviterMap[ag.id]?.username || '';
+
+        return (
+          ag.id.toLowerCase().includes(q) ||
+          (ag.username || '').toLowerCase().includes(q) ||
+          (ag.full_name || '').toLowerCase().includes(q) ||
+          (ag.email || '').toLowerCase().includes(q) ||
+          (ag.phone || '').toLowerCase().includes(q) ||
+          (ag.tier || '').toLowerCase().includes(q) ||
+          inviterName.toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => compareByDateTime(a, b, sortDirection));
+  }, [
+    agents,
+    todayTaskMap,
+    referralCountMap,
+    inviterMap,
+    agentActivityFilter,
+    searchQuery,
+    sortDirection,
+  ]);
+
+  const groupedAgents = useMemo(() => {
+    return groupItemsByDate(filteredAgents, sortDirection);
+  }, [filteredAgents, sortDirection]);
+
+  const filteredAgentIds = useMemo(() => {
+    return filteredAgents.map((ag) => ag.id);
+  }, [filteredAgents]);
+
+  const toggleSelectAgentId = (id: string) => {
+    setSelectedAgentIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
   };
 
-  const handleToggleSelectAllGroup = (dayTxIds: string[]) => {
-    const allSelected = dayTxIds.every(id => selectedIds.includes(id));
-    if (allSelected) {
-      setSelectedIds(prev => prev.filter(id => !dayTxIds.includes(id)));
-    } else {
-      const combined = Array.from(new Set([...selectedIds, ...dayTxIds]));
-      setSelectedIds(combined);
-    }
+  const filteredTransactions = useMemo(() => {
+    return transactions
+      .filter((tx) => {
+        const matchesStatus =
+          filterStatus === 'all' ||
+          (tx.status || '').toLowerCase() === filterStatus.toLowerCase();
+
+        const agentObj = Array.isArray(tx.agents) ? tx.agents[0] : tx.agents;
+        const rawType = tx.type || tx.tx_type || tx.request_type || '';
+        const haystack = [
+          tx.id,
+          tx.agent_id,
+          rawType,
+          tx.reference,
+          tx.transaction_ref,
+          tx.notes,
+          String(tx.amount ?? ''),
+          agentObj?.username,
+          agentObj?.full_name,
+          agentObj?.email,
+          agentObj?.phone,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+
+        const matchesQuery =
+          !searchQuery.trim() || haystack.includes(searchQuery.trim().toLowerCase());
+        return matchesStatus && matchesQuery;
+      })
+      .sort((a, b) => compareByDateTime(a, b, sortDirection));
+  }, [transactions, filterStatus, searchQuery, sortDirection]);
+
+  const groupedTransactions = useMemo(() => {
+    return groupItemsByDate(filteredTransactions, sortDirection);
+  }, [filteredTransactions, sortDirection]);
+
+  const sortedSuperAgents = useMemo(() => {
+    return [...superAgents].sort((a, b) => compareByDateTime(a, b, sortDirection));
+  }, [superAgents, sortDirection]);
+
+  const groupedSuperAgents = useMemo(() => {
+    return groupItemsByDate(sortedSuperAgents, sortDirection);
+  }, [sortedSuperAgents, sortDirection]);
+
+  const pendingFilteredIds = useMemo(() => {
+    return filteredTransactions
+      .filter((t) => (t.status || 'pending').toLowerCase() === 'pending')
+      .map((t) => t.id);
+  }, [filteredTransactions]);
+
+  const toggleSelectId = (id: string) => {
+    const target = transactions.find((t) => t.id === id);
+    if ((target?.status || 'pending').toLowerCase() !== 'pending') return;
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
   };
-
-  const handleBulkDelete = async () => {
-    if (selectedIds.length === 0) return;
-    if (!window.confirm(`Are you sure you want to permanently delete ${selectedIds.length} selected transaction(s)?`)) {
-      return;
-    }
-
-    setIsBulkDeleting(true);
-
-    try {
-      const { error } = await supabase
-        .from('transaction_requests')
-        .delete()
-        .in('id', selectedIds);
-
-      if (error) throw error;
-
-      showToast(`Successfully deleted ${selectedIds.length} transaction records.`);
-      setTransactions(prev => prev.filter(t => !selectedIds.includes(t.id)));
-      setSelectedIds([]);
-    } catch (err: any) {
-      showToast(`Bulk deletion failed: ${err.message}`);
-    } finally {
-      setIsBulkDeleting(false);
-    }
-  };
-
-  if (!isMounted) return <div className="min-h-screen bg-[#F5F7FA]" />;
-
-  const filteredTransactions = transactions.filter((tx) => {
-    const matchesStatus = filterStatus === 'all' || tx.status === filterStatus;
-    const searchLower = searchQuery.toLowerCase();
-    const matchesSearch = 
-      tx.transaction_ref?.toLowerCase().includes(searchLower) ||
-      tx.agents?.username?.toLowerCase().includes(searchLower) ||
-      tx.agents?.phone?.toLowerCase().includes(searchLower) ||
-      tx.tier?.toLowerCase().includes(searchLower) ||
-      tx.super_agent_name?.toLowerCase().includes(searchLower);
-    return matchesStatus && matchesSearch;
-  });
-
-  const totalVolume = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-  const approvedVolume = transactions.filter(t => t.status === 'approved').reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-  const pendingVolume = transactions.filter(t => t.status === 'pending').reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-  const groupedByDate = filteredTransactions.reduce((acc, tx) => {
-    const dateKey = new Date(tx.created_at).toISOString().split('T')[0];
-    if (!acc[dateKey]) {
-      acc[dateKey] = [];
-    }
-    acc[dateKey].push(tx);
-    return acc;
-  }, {} as Record<string, TransactionRequest[]>);
-
-  const sortedDateKeys = Object.keys(groupedByDate).sort((a, b) => b.localeCompare(a));
 
   return (
-    <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-sans flex flex-col selection:bg-[#0B1B36] selection:text-white relative pb-32">
-      
-      {notification && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#0B1B36] text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-white/20 text-xs font-mono flex items-center gap-3 animate-in fade-in">
-          <span className="w-2 h-2 rounded-full bg-white animate-pulse shrink-0"></span>
-          <span>{notification}</span>
-        </div>
-      )}
-
-      {/* SUPER AGENT EDIT MODAL */}
-      {editingAgent && (
-        <div className="fixed inset-0 z-50 bg-[#0B1B36]/80 backdrop-blur-md flex items-center justify-center p-4 font-mono">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-lg w-full border border-[#0B1B36]/20 shadow-2xl space-y-6 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-4 border-b border-[#0B1B36]/15">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-[#0B1B36]/10 text-[#0B1B36] flex items-center justify-center font-bold">
-                  <Edit3 size={20} />
-                </div>
-                <div>
-                  <h3 className="text-base font-extrabold text-[#0B1B36]">Edit Super Agent Node</h3>
-                  <span className="text-[10px] text-[#0B1B36]/60 uppercase font-bold">ID: {editingAgent.id}</span>
-                </div>
-              </div>
-              <button
-                onClick={() => setEditingAgent(null)}
-                className="p-2 rounded-xl bg-[#0B1B36]/5 hover:bg-[#0B1B36]/10 text-[#0B1B36] transition cursor-pointer"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <form onSubmit={handleUpdateSuperAgent} className="space-y-4 text-xs">
-              <div className="space-y-1">
-                <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Agent / Node Name *</label>
-                <input
-                  type="text"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Region / Location *</label>
-                <input
-                  type="text"
-                  value={editRegion}
-                  onChange={(e) => setEditRegion(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Phone Number</label>
-                <input
-                  type="text"
-                  value={editPhone}
-                  onChange={(e) => setEditPhone(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Telebirr Account Number</label>
-                <input
-                  type="text"
-                  value={editTelebirr}
-                  onChange={(e) => setEditTelebirr(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">CBE Account Number</label>
-                <input
-                  type="text"
-                  value={editCbe}
-                  onChange={(e) => setEditCbe(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                />
-              </div>
-
-              <div className="space-y-1 pt-2 border-t border-[#0B1B36]/10">
-                <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px] flex items-center gap-1">
-                  <Lock size={12} className="text-amber-600" /> 8-Figure Admin PIN Code *
-                </label>
-                <input
-                  type="password"
-                  maxLength={8}
-                  placeholder="********"
-                  value={editPin}
-                  onChange={(e) => setEditPin(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-amber-50/50 border border-amber-300 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] tracking-widest"
-                  required
-                />
-              </div>
-
-              <div className="flex justify-end gap-3 pt-4 border-t border-[#0B1B36]/15">
-                <button
-                  type="button"
-                  onClick={() => setEditingAgent(null)}
-                  className="px-4 py-2.5 rounded-xl bg-[#0B1B36]/10 hover:bg-[#0B1B36]/20 text-[#0B1B36] font-bold transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={updatingAgent}
-                  className="px-6 py-2.5 rounded-xl bg-[#0B1B36] hover:bg-[#152d56] text-white font-extrabold transition shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                >
-                  {updatingAgent ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Changes
-                </button>
-              </div>
-            </form>
+    <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] p-4 sm:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Toast */}
+        {toast && (
+          <div
+            className={`fixed bottom-6 right-6 z-50 rounded-2xl px-4 py-3 text-xs font-medium shadow-xl border backdrop-blur-md transition max-w-md ${
+              toast.type === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-800'
+                : toast.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : 'bg-white border-[#AEB8C4]/50 text-[#0B1B36]'
+            }`}
+          >
+            {toast.message}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* SUPER AGENT DETAIL MODAL */}
-      {selectedAgentDetail && (
-        <div className="fixed inset-0 z-50 bg-[#0B1B36]/80 backdrop-blur-md flex items-center justify-center p-4 font-mono">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 max-w-lg w-full border border-[#0B1B36]/20 shadow-2xl space-y-6 animate-in fade-in zoom-in-95">
-            <div className="flex justify-between items-center pb-4 border-b border-[#0B1B36]/15">
-              <div className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-xl bg-[#0B1B36]/10 text-[#0B1B36] flex items-center justify-center font-bold">
-                  <Store size={20} />
-                </div>
-                <div>
-                  <h3 className="text-base font-extrabold text-[#0B1B36]">{selectedAgentDetail.name}</h3>
-                  <span className="text-[10px] text-[#0B1B36]/60 uppercase font-bold">Node ID: {selectedAgentDetail.id}</span>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedAgentDetail(null)}
-                className="p-2 rounded-xl bg-[#0B1B36]/5 hover:bg-[#0B1B36]/10 text-[#0B1B36] transition cursor-pointer"
-              >
-                <X size={18} />
-              </button>
+        {/* Top Header Card */}
+        <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-5 sm:p-6 shadow-xs flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-[#0B1B36] text-white flex items-center justify-center shadow-xs">
+              <ShieldCheck size={20} />
             </div>
-
-            <div className="space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="p-3.5 rounded-2xl bg-[#F5F7FA] border border-[#0B1B36]/10 space-y-1">
-                  <span className="text-[10px] text-[#0B1B36]/60 uppercase font-bold block">Operating Region</span>
-                  <strong className="text-[#0B1B36] text-sm">{selectedAgentDetail.region || 'Central Node'}</strong>
-                </div>
-                <div className="p-3.5 rounded-2xl bg-[#F5F7FA] border border-[#0B1B36]/10 space-y-1">
-                  <span className="text-[10px] text-[#0B1B36]/60 uppercase font-bold block">Contact Phone</span>
-                  <strong className="text-[#0B1B36] text-sm">{selectedAgentDetail.phone || 'Not Assigned'}</strong>
-                </div>
+            <div>
+              <div className="flex items-center gap-2 text-xs text-[#536171]">
+                <span className="font-semibold text-[#0B1B36]">Master Admin</span>
+                <span>•</span>
+                <span className="inline-flex items-center gap-1.5 text-emerald-700 font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Live Activity Stream
+                </span>
               </div>
-
-              <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#0B1B36]/10 space-y-3">
-                <div className="text-[10px] text-[#0B1B36]/60 uppercase font-bold">Escrow Account Numbers</div>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-[#0B1B36]/10">
-                    <span className="text-[#0B1B36]/70">Telebirr Account:</span>
-                    <strong className="text-[#0B1B36] font-mono">{selectedAgentDetail.telebirr_account || selectedAgentDetail.phone || 'N/A'}</strong>
-                  </div>
-                  <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-[#0B1B36]/10">
-                    <span className="text-[#0B1B36]/70">CBE Account:</span>
-                    <strong className="text-[#0B1B36] font-mono">{selectedAgentDetail.cbe_account || 'N/A'}</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-[11px] text-[#0B1B36]/60 pt-1">
-                Registered On: {selectedAgentDetail.created_at ? new Date(selectedAgentDetail.created_at).toLocaleString() : 'System Default'}
-              </div>
-            </div>
-
-            <div className="flex justify-between gap-3 pt-2">
-              <button
-                onClick={() => { setSelectedAgentDetail(null); handleOpenEditModal(selectedAgentDetail); }}
-                className="px-4 py-2.5 rounded-xl bg-[#0B1B36] text-white font-bold transition text-xs flex items-center gap-1.5 cursor-pointer hover:bg-[#152d56]"
-              >
-                <Edit3 size={14} /> Edit Node
-              </button>
-              <button
-                onClick={() => setSelectedAgentDetail(null)}
-                className="px-5 py-2.5 rounded-xl bg-white/10 text-[#0B1B36] border border-[#0B1B36]/20 font-bold transition text-xs"
-              >
-                Close
-              </button>
+              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[#0B1B36]">
+                Admin Control Center
+              </h1>
             </div>
           </div>
-        </div>
-      )}
 
-      {selectedIds.length > 0 && activeTab === 'transactions' && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-[#0B1B36] text-white px-6 py-4 rounded-2xl shadow-2xl border border-white/20 font-mono text-xs flex items-center gap-6 animate-in slide-in-from-bottom-6">
-          <div className="flex items-center gap-2">
-            <span className="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold text-[11px]">
-              {selectedIds.length}
-            </span>
-            <span>Transactions Selected</span>
-          </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="bg-[#F5F7FA] p-1 rounded-2xl border border-[#AEB8C4]/40 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setActiveTab('agents')}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'agents'
+                    ? 'bg-[#0B1B36] text-white shadow-xs'
+                    : 'text-[#536171] hover:text-[#0B1B36]'
+                }`}
+              >
+                Agents Live ({agents.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('transactions')}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'transactions'
+                    ? 'bg-[#0B1B36] text-white shadow-xs'
+                    : 'text-[#536171] hover:text-[#0B1B36]'
+                }`}
+              >
+                Transactions ({transactions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('super-agents')}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === 'super-agents'
+                    ? 'bg-[#0B1B36] text-white shadow-xs'
+                    : 'text-[#536171] hover:text-[#0B1B36]'
+                }`}
+              >
+                Super Agents ({superAgents.length})
+              </button>
+            </div>
+
             <button
-              onClick={handleBulkDelete}
-              disabled={isBulkDeleting}
-              className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition flex items-center gap-2 cursor-pointer shadow-md disabled:opacity-50"
+              type="button"
+              onClick={() =>
+                setSortDirection((prev) => (prev === 'desc' ? 'asc' : 'desc'))
+              }
+              className="px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-white hover:bg-[#F5F7FA] text-[#0B1B36] border border-[#AEB8C4]/50 transition flex items-center gap-1.5 cursor-pointer"
+              title="Sort by date & time"
             >
-              {isBulkDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-              Delete Selected
+              <ArrowUpDown size={13} />
+              <span>{sortDirection === 'desc' ? 'Newest First' : 'Oldest First'}</span>
             </button>
+
             <button
-              onClick={() => setSelectedIds([])}
-              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white transition cursor-pointer"
+              type="button"
+              onClick={() => {
+                fetchAgentsAndActivity();
+                fetchTransactions(true);
+                fetchSuperAgents(false);
+              }}
+              disabled={isRefreshing}
+              className="px-3.5 py-2.5 rounded-2xl text-xs font-semibold bg-white hover:bg-[#F5F7FA] text-[#0B1B36] border border-[#AEB8C4]/50 transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
-              Clear
+              <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
+              <span>{isRefreshing ? 'Syncing...' : 'Sync'}</span>
             </button>
           </div>
         </div>
-      )}
 
-      {selectedReceiptUrl && (
-        <div className="fixed inset-0 z-50 bg-[#0B1B36]/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-2xl w-full border border-[#0B1B36]/20 shadow-2xl space-y-4 font-mono">
-            <div className="flex justify-between items-center pb-3 border-b border-[#0B1B36]/15">
-              <h3 className="text-sm font-extrabold text-[#0B1B36] flex items-center gap-2">
-                <ImageIcon size={16} /> Transaction Receipt Verification Proof
-              </h3>
-              <button
-                onClick={() => setSelectedReceiptUrl(null)}
-                className="p-2 rounded-xl bg-[#0B1B36]/5 hover:bg-[#0B1B36]/10 text-[#0B1B36] transition cursor-pointer"
-              >
-                <X size={18} />
-              </button>
+        {/* Live Activity & Ledger Summary Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white border border-[#AEB8C4]/40 rounded-2xl p-5 shadow-xs">
+            <div className="flex items-center justify-between text-xs font-medium text-[#536171]">
+              <span>Total FGG Cap</span>
+              <Coins size={15} className="text-[#0B1B36]" />
             </div>
-            
-            <div className="bg-[#F5F7FA] rounded-2xl p-4 border border-[#0B1B36]/15 flex items-center justify-center overflow-hidden max-h-[70vh]">
-              <img
-                src={selectedReceiptUrl}
-                alt="Payment Receipt"
-                className="max-h-[60vh] object-contain rounded-xl shadow-md border border-[#0B1B36]/10"
-              />
+            <div className="text-2xl font-bold text-[#0B1B36] mt-1">
+              ETB {stats.totalFggCap.toLocaleString()}
             </div>
+            <div className="text-xs text-[#536171] mt-1">Combined agent FGG cap</div>
+          </div>
 
-            <div className="flex justify-end gap-3 pt-2">
-              <a
-                href={selectedReceiptUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-4 py-2 rounded-xl bg-[#0B1B36]/10 hover:bg-[#0B1B36]/20 text-[#0B1B36] text-xs font-bold transition flex items-center gap-1.5"
-              >
-                Open Original <ExternalLink size={14} />
-              </a>
-              <button
-                onClick={() => setSelectedReceiptUrl(null)}
-                className="px-5 py-2 rounded-xl bg-[#0B1B36] text-white text-xs font-bold transition hover:bg-[#152d56]"
-              >
-                Close Viewer
-              </button>
+          <div className="bg-white border border-[#AEB8C4]/40 rounded-2xl p-5 shadow-xs">
+            <div className="flex items-center justify-between text-xs font-medium text-[#536171]">
+              <span>Total Deposits</span>
+              <ArrowDownLeft size={15} className="text-emerald-600" />
+            </div>
+            <div className="text-2xl font-bold text-emerald-700 mt-1">
+              ETB {stats.totalDeposits.toLocaleString()}
+            </div>
+            <div className="text-xs text-[#536171] mt-1">All non-rejected deposits</div>
+          </div>
+
+          <div className="bg-white border border-[#AEB8C4]/40 rounded-2xl p-5 shadow-xs">
+            <div className="flex items-center justify-between text-xs font-medium text-[#536171]">
+              <span>Total Withdrawals</span>
+              <ArrowUpRight size={15} className="text-amber-600" />
+            </div>
+            <div className="text-2xl font-bold text-amber-700 mt-1">
+              ETB {stats.totalWithdrawals.toLocaleString()}
+            </div>
+            <div className="text-xs text-[#536171] mt-1">All non-rejected withdrawals</div>
+          </div>
+
+          <div className="bg-white border border-[#AEB8C4]/40 rounded-2xl p-5 shadow-xs">
+            <div className="flex items-center justify-between text-xs font-medium text-[#536171]">
+              <span>Total Agent Liquidity</span>
+              <Wallet size={15} className="text-emerald-600" />
+            </div>
+            <div className="text-2xl font-bold text-emerald-700 mt-1">
+              ETB {stats.totalAgentBalances.toLocaleString()}
+            </div>
+            <div className="text-xs text-[#536171] mt-1">
+              {stats.activeTodayAgents} / {agents.length} active today • {stats.pendingCount} pending
             </div>
           </div>
         </div>
-      )}
 
-      {/* ADMIN TOP HEADER BAR */}
-      <header className="bg-white/95 backdrop-blur-md border-b border-[#0B1B36]/15 px-6 py-4 flex items-center justify-between sticky top-0 z-30 font-mono">
-        <div className="flex items-center gap-4">
-          <div className="text-xs text-[#0B1B36]/70 flex items-center gap-2.5">
-            <span className="font-extrabold text-[#0B1B36] text-sm">Future Gate Global - Master Admin</span>
-            <span className="text-[#0B1B36]/30">/</span>
-            <span className="inline-flex items-center gap-1.5 text-[#0B1B36] bg-[#0B1B36]/5 border border-[#0B1B36]/15 px-3 py-1 rounded-full text-xs font-bold">
-              <ShieldAlert size={13} className="text-amber-600" /> Secure Terminal
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => { fetchTransactions(true); fetchSuperAgents(); }}
-            disabled={isRefreshing}
-            className="px-4 py-2 rounded-xl bg-white hover:bg-[#0B1B36] hover:text-white border border-[#0B1B36]/20 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs font-mono"
-          >
-            <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
-            <span>Synchronize Terminal</span>
-          </button>
-        </div>
-      </header>
-
-      <main className="flex-1 p-4 sm:p-8 space-y-6 max-w-7xl mx-auto w-full font-mono">
-        
-        {/* NAVIGATION TABS */}
-        <div className="flex items-center gap-3 border-b border-[#0B1B36]/15 pb-4">
-          <button
-            onClick={() => setActiveTab('transactions')}
-            className={`px-5 py-2.5 rounded-2xl text-xs font-extrabold uppercase transition cursor-pointer flex items-center gap-2 border ${
-              activeTab === 'transactions'
-                ? 'bg-[#0B1B36] text-white border-[#0B1B36] shadow-md'
-                : 'bg-white text-[#0B1B36] border-[#0B1B36]/15 hover:bg-[#0B1B36]/5'
-            }`}
-          >
-            <FileText size={15} /> Transaction Ledger ({transactions.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('super_agents')}
-            className={`px-5 py-2.5 rounded-2xl text-xs font-extrabold uppercase transition cursor-pointer flex items-center gap-2 border ${
-              activeTab === 'super_agents'
-                ? 'bg-[#0B1B36] text-white border-[#0B1B36] shadow-md'
-                : 'bg-white text-[#0B1B36] border-[#0B1B36]/15 hover:bg-[#0B1B36]/5'
-            }`}
-          >
-            <ShieldCheck size={15} /> Super Agent Nodes ({superAgents.length})
-          </button>
-        </div>
-
-        {/* TAB 1: TRANSACTIONS AUDIT CONSOLE */}
-        {activeTab === 'transactions' && (
-          <div className="space-y-6 animate-in fade-in">
-            
-            <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#122a52] text-white rounded-3xl p-6 sm:p-8 border border-white/15 shadow-xl space-y-6">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
-                <div className="space-y-3">
-                  <span className="px-3 py-1 rounded-full bg-white/10 border border-white/20 text-[11px] font-extrabold">
-                    Transaction Filing & Verification Hub
-                  </span>
-                  <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white flex items-center gap-2.5">
-                    <Layers size={24} className="text-white" /> Upgrade & Deposit Audit Console
-                  </h1>
-                  <p className="text-xs text-white/75 max-w-xl leading-relaxed">
-                    Review incoming agent upgrade requests with detailed metadata, tracking exactly which super agent node or administrator authorized each entry.
-                  </p>
-                </div>
-
-                <div className="bg-white/10 p-4 rounded-2xl border border-white/15 backdrop-blur-sm flex items-center gap-4">
-                  <div>
-                    <div className="text-[10px] text-white/70 uppercase font-bold">Pending Review</div>
-                    <div className="text-2xl font-extrabold text-amber-300">
-                      {transactions.filter(t => t.status === 'pending').length}
-                    </div>
-                  </div>
-                  <div className="w-px h-8 bg-white/20"></div>
-                  <div>
-                    <div className="text-[10px] text-white/70 uppercase font-bold">Total Filings</div>
-                    <div className="text-2xl font-extrabold text-white">
-                      {transactions.length}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-white/15">
-                <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
-                  <div className="text-[10px] text-white/70 uppercase font-bold flex items-center gap-1.5">
-                    <DollarSign size={13} className="text-emerald-400" /> Total Ledger Volume
-                  </div>
-                  <div className="text-xl font-extrabold text-white">
-                    ETB {totalVolume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </div>
-                </div>
-
-                <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
-                  <div className="text-[10px] text-white/70 uppercase font-bold flex items-center gap-1.5">
-                    <CheckCircle2 size={13} className="text-emerald-400" /> Approved Volume
-                  </div>
-                  <div className="text-xl font-extrabold text-emerald-400">
-                    ETB {approvedVolume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </div>
-                </div>
-
-                <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
-                  <div className="text-[10px] text-white/70 uppercase font-bold flex items-center gap-1.5">
-                    <Clock size={13} className="text-amber-300" /> Pending Volume
-                  </div>
-                  <div className="text-xl font-extrabold text-amber-300">
-                    ETB {pendingVolume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white p-4 sm:p-6 rounded-3xl border border-[#0B1B36]/15 shadow-xs flex flex-col sm:flex-row justify-between items-center gap-4">
-              <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto pb-2 sm:pb-0">
-                {(['pending', 'approved', 'rejected', 'all'] as const).map((status) => (
+        {/* AGENTS LIVE ACTIVITY TAB (SEPARATED BY DATE) */}
+        {activeTab === 'agents' && (
+          <div className="space-y-4">
+            <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-4 sm:p-5 shadow-xs flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(
+                  [
+                    { key: 'all', label: 'All Agents' },
+                    { key: 'active-today', label: 'Active Daily Tasks Today' },
+                    { key: 'with-referrals', label: 'Has Referrals' },
+                  ] as const
+                ).map((item) => (
                   <button
-                    key={status}
-                    onClick={() => setFilterStatus(status)}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold uppercase transition cursor-pointer border ${
-                      filterStatus === status
-                        ? 'bg-[#0B1B36] text-white border-[#0B1B36]'
-                        : 'bg-[#F5F7FA] text-[#0B1B36] border-[#0B1B36]/15 hover:bg-[#0B1B36]/5'
+                    key={item.key}
+                    type="button"
+                    onClick={() => setAgentActivityFilter(item.key)}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                      agentActivityFilter === item.key
+                        ? 'bg-[#0B1B36] text-white'
+                        : 'bg-[#F5F7FA] text-[#536171] hover:text-[#0B1B36]'
                     }`}
                   >
-                    {status} ({transactions.filter(t => status === 'all' || t.status === status).length})
+                    {item.label}
                   </button>
                 ))}
               </div>
 
-              <div className="relative w-full sm:w-72">
-                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#0B1B36]/50" />
-                <input
-                  type="text"
-                  placeholder="Search by name, ref, super agent..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 text-xs font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                />
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="relative flex-1 sm:w-72">
+                  <Search
+                    size={14}
+                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#536171]"
+                  />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search agent, inviter, phone, tier..."
+                    className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl pl-9 pr-3 py-2 text-xs text-[#0B1B36] placeholder:text-[#536171] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResetFilters}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] hover:text-[#0B1B36] border border-[#AEB8C4]/40 transition cursor-pointer"
+                >
+                  Reset
+                </button>
               </div>
             </div>
 
-            {loading ? (
-              <div className="bg-white rounded-3xl p-12 text-center flex items-center justify-center gap-3 text-xs text-[#0B1B36]/70 border border-[#0B1B36]/15">
-                <Loader2 size={18} className="animate-spin text-[#0B1B36]" />
-                <span>Loading Transaction Records...</span>
+            {selectedAgentIds.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-rose-200 px-5 py-3 rounded-2xl shadow-xs text-xs">
+                <span className="font-semibold text-[#0B1B36]">
+                  {selectedAgentIds.length} agent account{selectedAgentIds.length > 1 ? 's' : ''} selected
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isBulkDeletingAgents}
+                    onClick={() => setConfirmBulkDeleteOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold transition disabled:opacity-50 cursor-pointer"
+                  >
+                    <Trash2 size={13} />
+                    <span>Delete Selected</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAgentIds([])}
+                    className="px-3 py-1.5 rounded-xl bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] font-semibold transition cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
-            ) : sortedDateKeys.length === 0 ? (
-              <div className="bg-white rounded-3xl p-12 text-center text-xs text-[#0B1B36]/60 border border-[#0B1B36]/15">
-                No transaction filings found matching your criteria.
+            )}
+
+            {loadingAgentsList ? (
+              <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-10 text-center text-xs text-[#536171] shadow-xs">
+                Loading agents and live task/referral status...
+              </div>
+            ) : groupedAgents.length === 0 ? (
+              <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-10 text-center text-xs text-[#536171] shadow-xs">
+                No agents match the active filter.
               </div>
             ) : (
               <div className="space-y-6">
-                {sortedDateKeys.map((dateStr) => {
-                  const dayTxs = groupedByDate[dateStr];
-                  const dayTxIds = dayTxs.map(t => t.id);
-                  const isAllGroupSelected = dayTxIds.length > 0 && dayTxIds.every(id => selectedIds.includes(id));
-                  const dayTotalAmount = dayTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+                {groupedAgents.map((group) => (
+                  <div key={group.dateKey} className="space-y-2.5">
+                    <div className="flex items-center justify-between px-4 py-2.5 bg-white border border-[#AEB8C4]/40 rounded-2xl shadow-2xs">
+                      <div className="flex items-center gap-2 text-xs font-bold text-[#0B1B36]">
+                        <Calendar size={14} className="text-[#0B1B36]" />
+                        <span>{group.dateLabel}</span>
+                      </div>
+                      <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#F5F7FA] text-[#536171] border border-[#AEB8C4]/30">
+                        {group.items.length} {group.items.length === 1 ? 'agent' : 'agents'}
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto bg-white border border-[#AEB8C4]/40 rounded-3xl shadow-xs">
+                      <table className="w-full text-left text-xs">
+                        <thead className="border-b border-[#AEB8C4]/30 text-[11px] uppercase tracking-wider text-[#536171] bg-[#F5F7FA]/80">
+                          <tr>
+                            <th className="p-4 w-11">
+                              <input
+                                type="checkbox"
+                                className="rounded border-[#AEB8C4]"
+                                disabled={group.items.length === 0}
+                                checked={
+                                  group.items.length > 0 &&
+                                  group.items.every((ag) => selectedAgentIds.includes(ag.id))
+                                }
+                                onChange={(e) => {
+                                  const groupIds = group.items.map((ag) => ag.id);
+                                  setSelectedAgentIds((prev) =>
+                                    e.target.checked
+                                      ? Array.from(new Set([...prev, ...groupIds]))
+                                      : prev.filter((id) => !groupIds.includes(id))
+                                  );
+                                }}
+                              />
+                            </th>
+                            <th className="p-4">Agent</th>
+                            <th className="p-4">Date &amp; Time</th>
+                            <th className="p-4">Current Account Balance</th>
+                            <th className="p-4">Invited By (Inviter)</th>
+                            <th className="p-4">Daily Tasks</th>
+                            <th className="p-4">Calculated Commission</th>
+                            <th className="p-4">Referrals Made</th>
+                            <th className="p-4">Status</th>
+                            <th className="p-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#AEB8C4]/25">
+                          {group.items.map((ag) => {
+                            const metrics = commissionMap[ag.id] || {
+                              todayTasks: todayTaskMap[ag.id] || 0,
+                              totalTasks: totalTaskMap[ag.id] || 0,
+                              taskCommission: 0,
+                              referralCommission: 0,
+                              totalCommission: 0,
+                            };
+                            const todayTasks = metrics.todayTasks;
+                            const totalTasks = metrics.totalTasks;
+                            const referrals = referralCountMap[ag.id] || 0;
+                            const isDoingTasksToday = todayTasks > 0;
+                            const inviter = inviterMap[ag.id];
+                            const currBalance = roundMoney(parseNumericValue(ag.balance));
+                            const currentStatus = ag.status || 'active';
+
+                            return (
+                              <tr key={ag.id} className="hover:bg-[#F5F7FA]/70 transition">
+                                <td className="p-4">
+                                  <input
+                                    type="checkbox"
+                                    className="rounded border-[#AEB8C4]"
+                                    checked={selectedAgentIds.includes(ag.id)}
+                                    onChange={() => toggleSelectAgentId(ag.id)}
+                                  />
+                                </td>
+
+                                <td className="p-4">
+                                  <div className="font-semibold text-sm text-[#0B1B36]">
+                                    {ag.full_name ||
+                                      ag.username ||
+                                      ag.email ||
+                                      ag.id.slice(0, 8)}
+                                  </div>
+                                  <div className="text-[11px] text-[#536171] mt-0.5">
+                                    {ag.phone || ag.email || ag.id} • Tier:{' '}
+                                    <span className="font-semibold text-[#0B1B36]">
+                                      {ag.tier || 'Standard'}
+                                    </span>
+                                  </div>
+                                </td>
+
+                                <td className="p-4 text-[11px] text-[#536171] whitespace-nowrap">
+                                  {formatDateTime(ag.created_at)}
+                                </td>
+
+                                <td className="p-4">
+                                  <div className="font-bold text-sm text-emerald-700">
+                                    ETB {currBalance.toLocaleString()}
+                                  </div>
+                                  <div className="text-[10px] text-[#536171] mt-0.5">
+                                    {currBalance > 0 ? 'Active Funds' : 'Zero Balance'}
+                                  </div>
+                                </td>
+
+                                <td className="p-4">
+                                  {inviter ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <GitBranch size={13} className="text-[#0B1B36]" />
+                                      <div>
+                                        <div className="font-semibold text-xs text-[#0B1B36]">
+                                          {inviter.full_name ||
+                                            inviter.username ||
+                                            inviter.phone ||
+                                            inviter.id.slice(0, 8)}
+                                        </div>
+                                        <div className="text-[10px] text-[#536171]">
+                                          Direct Parent
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[11px] text-[#536171] italic">
+                                      Direct Sign-up (No Inviter)
+                                    </span>
+                                  )}
+                                </td>
+
+                                <td className="p-4">
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold border ${
+                                        isDoingTasksToday
+                                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                          : 'bg-slate-100 text-[#536171] border-slate-200'
+                                      }`}
+                                    >
+                                      <CheckSquare size={12} />
+                                      <span>
+                                        {isDoingTasksToday
+                                          ? `Active (${todayTasks} today)`
+                                          : 'Idle today'}
+                                      </span>
+                                    </span>
+                                    <span className="text-[11px] text-[#536171] font-mono">
+                                      ({totalTasks} total)
+                                    </span>
+                                  </div>
+                                </td>
+
+                                <td className="p-4">
+                                  <div className="font-bold text-xs text-[#0B1B36]">
+                                    ETB {metrics.totalCommission.toLocaleString()}
+                                  </div>
+                                  <div className="text-[10px] text-[#536171] font-mono mt-0.5">
+                                    T:{metrics.taskCommission} + R:{metrics.referralCommission}
+                                  </div>
+                                </td>
+
+                                <td className="p-4">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedAgentForTree(ag)}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-[#F5F7FA] text-[#0B1B36] border border-[#AEB8C4]/40 hover:bg-[#0B1B36] hover:text-white transition cursor-pointer"
+                                  >
+                                    <UserPlus size={12} />
+                                    <span>
+                                      {referrals} {referrals === 1 ? 'referral' : 'referrals'}
+                                    </span>
+                                  </button>
+                                </td>
+
+                                <td className="p-4">
+                                  <select
+                                    disabled={updatingAgentId === ag.id}
+                                    value={currentStatus}
+                                    onChange={(e) =>
+                                      handleUpdateAgentStatus(ag.id, e.target.value)
+                                    }
+                                    className={`px-2.5 py-1 rounded-full text-[11px] font-semibold capitalize border focus:outline-none cursor-pointer ${getStatusBadgeStyle(
+                                      currentStatus
+                                    )}`}
+                                  >
+                                    <option value="active">active</option>
+                                    <option value="suspended">suspended</option>
+                                    <option value="inactive">inactive</option>
+                                  </select>
+                                </td>
+
+                                <td className="p-4 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => setDeletingAgentTarget(ag)}
+                                    className="p-2 rounded-xl text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition cursor-pointer"
+                                    title="Delete Agent Account"
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TRANSACTIONS TAB (SEPARATED BY DATE) */}
+        {activeTab === 'transactions' && (
+          <div className="space-y-4">
+            <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-4 sm:p-5 shadow-xs flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {['pending', 'approved', 'rejected', 'all'].map((status) => (
+                  <button
+                    key={status}
+                    type="button"
+                    onClick={() => setFilterStatus(status)}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold capitalize transition cursor-pointer ${
+                      filterStatus === status
+                        ? 'bg-[#0B1B36] text-white'
+                        : 'bg-[#F5F7FA] text-[#536171] hover:text-[#0B1B36]'
+                    }`}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                <div className="relative flex-1 sm:w-64">
+                  <Search
+                    size={14}
+                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#536171]"
+                  />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search agent, phone, ref, amount..."
+                    className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl pl-9 pr-3 py-2 text-xs text-[#0B1B36] placeholder:text-[#536171] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResetFilters}
+                  className="px-3 py-2 rounded-xl text-xs font-semibold bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] hover:text-[#0B1B36] border border-[#AEB8C4]/40 transition cursor-pointer"
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+
+            {selectedIds.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-[#0B1B36]/20 px-5 py-3 rounded-2xl shadow-xs text-xs">
+                <span className="font-semibold text-[#0B1B36]">
+                  {selectedIds.length} pending transaction{selectedIds.length > 1 ? 's' : ''} selected
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={processingId === 'bulk'}
+                    onClick={() => handleBulkStatusUpdate('approved')}
+                    className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition disabled:opacity-50 cursor-pointer"
+                  >
+                    Approve Selected
+                  </button>
+                  <button
+                    type="button"
+                    disabled={processingId === 'bulk'}
+                    onClick={() => handleBulkStatusUpdate('rejected')}
+                    className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-semibold transition disabled:opacity-50 cursor-pointer"
+                  >
+                    Reject Selected
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds([])}
+                    className="px-3 py-1.5 rounded-xl bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] font-semibold transition cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {loading ? (
+              <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-10 text-center text-xs text-[#536171] shadow-xs">
+                Loading transaction requests...
+              </div>
+            ) : groupedTransactions.length === 0 ? (
+              <div className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-10 text-center text-xs text-[#536171] shadow-xs">
+                No matching transactions found.
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {groupedTransactions.map((group) => {
+                  const groupPendingIds = group.items
+                    .filter((t) => (t.status || 'pending').toLowerCase() === 'pending')
+                    .map((t) => t.id);
 
                   return (
-                    <div key={dateStr} className="bg-white rounded-3xl border border-[#0B1B36]/15 shadow-xs overflow-hidden">
-                      
-                      <div className="bg-[#0B1B36]/5 px-6 py-4 border-b border-[#0B1B36]/15 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleSelectAllGroup(dayTxIds)}
-                            className="flex items-center gap-1.5 text-xs font-bold text-[#0B1B36] hover:opacity-80 cursor-pointer"
-                          >
-                            {isAllGroupSelected ? <CheckSquare size={16} className="text-[#0B1B36]" /> : <Square size={16} className="text-[#0B1B36]/50" />}
-                            <span>Select Group</span>
-                          </button>
-                          <div className="w-px h-4 bg-[#0B1B36]/20"></div>
-                          <div className="flex items-center gap-2 text-[#0B1B36] font-extrabold">
-                            <Calendar size={16} className="text-[#0B1B36]" />
-                            <span>Date: {dateStr}</span>
-                            <span className="text-[11px] font-normal text-[#0B1B36]/60">({dayTxs.length} filing{dayTxs.length > 1 ? 's' : ''})</span>
-                          </div>
+                    <div key={group.dateKey} className="space-y-2.5">
+                      <div className="flex items-center justify-between px-4 py-2.5 bg-white border border-[#AEB8C4]/40 rounded-2xl shadow-2xs">
+                        <div className="flex items-center gap-2 text-xs font-bold text-[#0B1B36]">
+                          <Calendar size={14} className="text-[#0B1B36]" />
+                          <span>{group.dateLabel}</span>
                         </div>
-
-                        <div className="flex items-center gap-2 bg-white px-3.5 py-1.5 rounded-xl border border-[#0B1B36]/15 text-xs">
-                          <span className="text-[#0B1B36]/60 uppercase font-bold text-[10px]">Total Amount After Transactions:</span>
-                          <strong className="font-extrabold text-emerald-700">ETB {dayTotalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
-                        </div>
+                        <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#F5F7FA] text-[#536171] border border-[#AEB8C4]/30">
+                          {group.items.length}{' '}
+                          {group.items.length === 1 ? 'transaction' : 'transactions'}
+                        </span>
                       </div>
 
-                      <div className="overflow-x-auto">
+                      <div className="overflow-x-auto bg-white border border-[#AEB8C4]/40 rounded-3xl shadow-xs">
                         <table className="w-full text-left text-xs">
-                          <thead className="bg-white border-b border-[#0B1B36]/10 text-[10px] uppercase font-bold text-[#0B1B36]/70">
+                          <thead className="border-b border-[#AEB8C4]/30 text-[11px] uppercase tracking-wider text-[#536171] bg-[#F5F7FA]/80">
                             <tr>
-                              <th className="p-4 w-10">
-                                <span className="sr-only">Select</span>
+                              <th className="p-4 w-11">
+                                <input
+                                  type="checkbox"
+                                  className="rounded border-[#AEB8C4]"
+                                  disabled={groupPendingIds.length === 0}
+                                  checked={
+                                    groupPendingIds.length > 0 &&
+                                    groupPendingIds.every((id) => selectedIds.includes(id))
+                                  }
+                                  onChange={(e) =>
+                                    setSelectedIds((prev) =>
+                                      e.target.checked
+                                        ? Array.from(new Set([...prev, ...groupPendingIds]))
+                                        : prev.filter((id) => !groupPendingIds.includes(id))
+                                    )
+                                  }
+                                />
                               </th>
-                              <th className="p-4">Agent Details</th>
-                              <th className="p-4">Upgrade Tier</th>
-                              <th className="p-4">Amount & Method</th>
-                              <th className="p-4">Assigned Super Agent</th>
-                              <th className="p-4">Reference & Proof</th>
-                              <th className="p-4">Status & Processor</th>
+                              <th className="p-4">Agent</th>
+                              <th className="p-4">Date &amp; Time</th>
+                              <th className="p-4">Type</th>
+                              <th className="p-4">Amount</th>
+                              <th className="p-4">Reference</th>
+                              <th className="p-4">Status</th>
                               <th className="p-4 text-right">Actions</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-[#0B1B36]/10">
-                            {dayTxs.map((tx) => {
-                              const isProcessing = processingId === tx.id;
-                              const isSelected = selectedIds.includes(tx.id);
+                          <tbody className="divide-y divide-[#AEB8C4]/25">
+                            {group.items.map((tx) => {
+                              const agentObj = Array.isArray(tx.agents)
+                                ? tx.agents[0]
+                                : tx.agents;
+                              const isBusy =
+                                processingId === tx.id || processingId === 'bulk';
+                              const normalizedStatus = (tx.status || 'pending').toLowerCase();
+                              const isPending = normalizedStatus === 'pending';
+                              const rawType = tx.type || tx.tx_type || tx.request_type || '-';
+                              const isWithdrawal = ['withdrawal', 'withdraw', 'payout'].includes(
+                                rawType.toLowerCase()
+                              );
 
                               return (
-                                <tr key={tx.id} className={`hover:bg-[#F5F7FA]/70 transition ${isSelected ? 'bg-[#0B1B36]/5' : ''}`}>
+                                <tr key={tx.id} className="hover:bg-[#F5F7FA]/70 transition">
                                   <td className="p-4">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleToggleSelect(tx.id)}
-                                      className="cursor-pointer text-[#0B1B36] hover:opacity-80"
-                                    >
-                                      {isSelected ? <CheckSquare size={16} className="text-[#0B1B36]" /> : <Square size={16} className="text-[#0B1B36]/40" />}
-                                    </button>
+                                    <input
+                                      type="checkbox"
+                                      className="rounded border-[#AEB8C4] disabled:opacity-35"
+                                      disabled={!isPending}
+                                      checked={isPending && selectedIds.includes(tx.id)}
+                                      onChange={() => toggleSelectId(tx.id)}
+                                    />
                                   </td>
-
-                                  <td className="p-4 space-y-0.5">
-                                    <div className="font-extrabold text-[#0B1B36] flex items-center gap-1.5">
-                                      <User size={13} className="text-[#0B1B36]/60" />
-                                      {tx.agents?.username || 'Unknown Agent'}
-                                    </div>
-                                    <div className="text-[11px] text-[#0B1B36]/60 flex items-center gap-1">
-                                      <Smartphone size={11} /> {tx.agents?.phone || 'No Phone'}
-                                    </div>
-                                  </td>
-
                                   <td className="p-4">
-                                    <span className="px-2.5 py-1 rounded-full bg-[#0B1B36]/10 text-[#0B1B36] font-extrabold text-[11px]">
-                                      {tx.tier || 'N/A'}
-                                    </span>
+                                    <div className="font-semibold text-sm text-[#0B1B36]">
+                                      {agentObj?.username ||
+                                        agentObj?.full_name ||
+                                        agentObj?.email ||
+                                        tx.agent_id ||
+                                        'Unknown'}
+                                    </div>
+                                    <div className="text-[11px] text-[#536171] mt-0.5">
+                                      {agentObj?.phone || 'No phone'}
+                                      {agentObj?.balance != null
+                                        ? ` • Bal: ETB ${roundMoney(
+                                            parseNumericValue(agentObj.balance)
+                                          ).toLocaleString()}`
+                                        : ''}
+                                    </div>
                                   </td>
-
+                                  <td className="p-4 text-[11px] text-[#536171] whitespace-nowrap">
+                                    {formatDateTime(tx.created_at)}
+                                  </td>
                                   <td className="p-4">
-                                    <div className="font-extrabold text-emerald-700">
-                                      ETB {tx.amount?.toLocaleString()}
-                                    </div>
-                                    <div className="text-[10px] text-[#0B1B36]/60 uppercase font-bold">
-                                      {tx.method || 'Telebirr'}
-                                    </div>
-                                  </td>
-
-                                  <td className="p-4">
-                                    <div className="font-bold text-[#0B1B36] flex items-center gap-1.5">
-                                      <ShieldCheck size={13} className="text-blue-600 shrink-0" />
-                                      <span>{tx.super_agent_name || 'Central Escrow Node'}</span>
-                                    </div>
-                                    <div className="text-[10px] text-[#0B1B36]/50">Round-robin pool routing</div>
-                                  </td>
-
-                                  <td className="p-4 space-y-1">
-                                    <div className="font-mono font-bold text-[#0B1B36] bg-[#0B1B36]/5 px-2 py-0.5 rounded-md inline-block">
-                                      {tx.transaction_ref}
-                                    </div>
-                                    <div>
-                                      {tx.receipt_url ? (
-                                        <button
-                                          onClick={() => setSelectedReceiptUrl(tx.receipt_url!)}
-                                          className="px-2.5 py-1 rounded-lg bg-white border border-[#0B1B36]/20 hover:bg-[#0B1B36] hover:text-white transition text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer shadow-xs mt-0.5"
-                                        >
-                                          <ImageIcon size={11} /> View Screenshot Proof
-                                        </button>
+                                    <span className="inline-flex items-center gap-1 capitalize font-semibold text-[#0B1B36]">
+                                      {isWithdrawal ? (
+                                        <ArrowUpRight size={13} className="text-amber-600" />
                                       ) : (
-                                        <span className="text-[10px] text-rose-600 font-bold">No Image</span>
+                                        <ArrowDownLeft size={13} className="text-emerald-600" />
                                       )}
-                                    </div>
-                                  </td>
-
-                                  <td className="p-4 space-y-1">
-                                    <span className={`px-3 py-1 rounded-full text-[10px] font-extrabold uppercase inline-flex items-center gap-1 ${
-                                      tx.status === 'approved'
-                                        ? 'bg-emerald-500 text-white'
-                                        : tx.status === 'rejected'
-                                        ? 'bg-rose-500 text-white'
-                                        : 'bg-amber-400 text-amber-950 animate-pulse'
-                                    }`}>
-                                      {tx.status === 'approved' && <CheckCircle2 size={11} />}
-                                      {tx.status === 'rejected' && <XCircle size={11} />}
-                                      {tx.status === 'pending' && <Clock size={11} />}
-                                      {tx.status}
+                                      {rawType}
                                     </span>
-                                    <div className="text-[10px] text-[#0B1B36]/60 flex items-center gap-1">
-                                      <UserCheck size={11} /> {tx.super_agent_name || (tx.status === 'pending' ? 'Pending Review' : 'System Admin')}
-                                    </div>
                                   </td>
-
-                                  <td className="p-4 text-right space-x-2">
-                                    <div className="flex items-center justify-end gap-2">
-                                      {tx.status === 'pending' && (
-                                        <>
-                                          <button
-                                            onClick={() => handleUpdateStatus(tx.id, tx.agent_id, tx.tier || 'Furniture', tx.amount, 'approved')}
-                                            disabled={isProcessing}
-                                            className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition cursor-pointer flex items-center gap-1 shadow-xs disabled:opacity-50"
-                                          >
-                                            {isProcessing ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Approve
-                                          </button>
-                                          <button
-                                            onClick={() => handleUpdateStatus(tx.id, tx.agent_id, tx.tier || 'Furniture', tx.amount, 'rejected')}
-                                            disabled={isProcessing}
-                                            className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition cursor-pointer flex items-center gap-1 shadow-xs disabled:opacity-50"
-                                          >
-                                            {isProcessing ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />} Reject
-                                          </button>
-                                        </>
-                                      )}
-                                      <button
-                                        onClick={() => handleDeleteTransaction(tx.id)}
-                                        disabled={isProcessing}
-                                        title="Delete Transaction"
-                                        className="p-2 rounded-xl bg-slate-100 hover:bg-rose-600 hover:text-white text-slate-700 transition cursor-pointer shadow-xs disabled:opacity-50"
-                                      >
-                                        <Trash2 size={14} />
-                                      </button>
-                                    </div>
+                                  <td className="p-4 font-bold text-sm text-[#0B1B36]">
+                                    ETB{' '}
+                                    {roundMoney(parseNumericValue(tx.amount)).toLocaleString()}
+                                  </td>
+                                  <td className="p-4 font-mono text-[11px] text-[#536171]">
+                                    {tx.reference || tx.transaction_ref || '-'}
+                                  </td>
+                                  <td className="p-4">
+                                    <span
+                                      className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold capitalize border ${getStatusBadgeStyle(
+                                        tx.status
+                                      )}`}
+                                    >
+                                      {tx.status || 'pending'}
+                                    </span>
+                                  </td>
+                                  <td className="p-4 text-right whitespace-nowrap">
+                                    {isPending ? (
+                                      <div className="inline-flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          disabled={isBusy}
+                                          onClick={() =>
+                                            handleUpdateTransactionStatus(tx.id, 'approved')
+                                          }
+                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                                        >
+                                          <CheckCircle2 size={13} />
+                                          <span>Approve</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isBusy}
+                                          onClick={() =>
+                                            handleUpdateTransactionStatus(tx.id, 'rejected')
+                                          }
+                                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                                        >
+                                          <XCircle size={13} />
+                                          <span>Reject</span>
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <span className="text-[11px] font-medium text-[#536171]">
+                                        Processed
+                                      </span>
+                                    )}
                                   </td>
                                 </tr>
                               );
@@ -997,191 +1996,607 @@ export default function AdminDashboardPage() {
                           </tbody>
                         </table>
                       </div>
-
                     </div>
                   );
                 })}
               </div>
             )}
-
           </div>
         )}
 
-        {/* TAB 2: SUPER AGENT MANAGEMENT PANEL */}
-        {activeTab === 'super_agents' && (
-          <div className="space-y-6 animate-in fade-in">
-            
-            <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#122a52] text-white rounded-3xl p-6 sm:p-8 border border-white/15 shadow-xl space-y-4">
-              <span className="px-3 py-1 rounded-full bg-white/10 border border-white/20 text-[11px] font-extrabold">
-                Round-Robin Payment Escrow Management
-              </span>
-              <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white flex items-center gap-2.5">
-                <Store size={24} className="text-white" /> Super Agent Nodes Pool ({superAgents.length})
-              </h1>
-              <p className="text-xs text-white/75 max-w-xl leading-relaxed">
-                Add, edit, or remove Super Agent nodes participating in the automated round-robin payment rotation. All modifications require an 8-figure admin authorization PIN.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* ADD SUPER AGENT FORM WITH 8-FIGURE PIN */}
-              <div className="bg-white rounded-3xl p-6 border border-[#0B1B36]/15 shadow-xs space-y-4 lg:col-span-1">
-                <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
-                  <UserPlus size={16} /> Add Super Agent Node
+        {/* SUPER AGENTS TAB (SEPARATED BY DATE) */}
+        {activeTab === 'super-agents' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <form
+              onSubmit={handleCreateSuperAgent}
+              className="bg-white border border-[#AEB8C4]/40 rounded-3xl p-6 shadow-xs space-y-4 h-fit"
+            >
+              <div className="flex items-center justify-between border-b border-[#AEB8C4]/30 pb-3">
+                <h2 className="text-base font-bold text-[#0B1B36] flex items-center gap-2">
+                  <Plus size={16} />
+                  <span>Add Super Agent</span>
                 </h2>
-
-                <form onSubmit={handleAddSuperAgent} className="space-y-3.5 text-xs">
-                  <div className="space-y-1">
-                    <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Agent / Node Name *</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Addis Central Node"
-                      value={newAgentName}
-                      onChange={(e) => setNewAgentName(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                      required
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Region / Location *</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Bole, Addis Ababa"
-                      value={newAgentRegion}
-                      onChange={(e) => setNewAgentRegion(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                      required
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Phone Number</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 0911223344"
-                      value={newAgentPhone}
-                      onChange={(e) => setNewAgentPhone(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">Telebirr Account Number</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 0911223344"
-                      value={newAgentTelebirr}
-                      onChange={(e) => setNewAgentTelebirr(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px]">CBE Account Number</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 1000293848592"
-                      value={newAgentCbe}
-                      onChange={(e) => setNewAgentCbe(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#F5F7FA] border border-[#0B1B36]/15 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36]"
-                    />
-                  </div>
-
-                  <div className="space-y-1 pt-2 border-t border-[#0B1B36]/10">
-                    <label className="text-[#0B1B36]/70 uppercase font-bold text-[10px] flex items-center gap-1">
-                      <Lock size={12} className="text-amber-600" /> 8-Figure Admin PIN Code *
-                    </label>
-                    <input
-                      type="password"
-                      maxLength={8}
-                      placeholder="********"
-                      value={adminPin}
-                      onChange={(e) => setAdminPin(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl bg-amber-50/50 border border-amber-300 font-bold text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] tracking-widest"
-                      required
-                    />
-                    <span className="text-[9px] text-[#0B1B36]/60">Required for master node authorization.</span>
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={addingAgent}
-                    className="w-full py-3 bg-[#0B1B36] hover:bg-[#152d56] text-white font-extrabold rounded-xl transition uppercase tracking-wider shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
-                  >
-                    {addingAgent ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Register Agent Node
-                  </button>
-                </form>
+                <button
+                  type="button"
+                  onClick={handleResetCreateForm}
+                  className="text-xs font-medium text-[#536171] hover:text-[#0B1B36] cursor-pointer"
+                >
+                  Clear
+                </button>
               </div>
 
-              {/* SUPER AGENTS LIST WITH EDIT & DETAILS ACCESSIBILITY */}
-              <div className="bg-white rounded-3xl p-6 border border-[#0B1B36]/15 shadow-xs space-y-4 lg:col-span-2">
-                <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
-                  <ShieldCheck size={16} /> Active Rotation Pool ({superAgents.length})
-                </h2>
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
 
-                {loadingAgents ? (
-                  <div className="p-8 text-center flex items-center justify-center gap-3 text-xs text-[#0B1B36]/70">
-                    <Loader2 size={16} className="animate-spin text-[#0B1B36]" />
-                    <span>Loading Super Agent Nodes...</span>
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Region *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={newRegion}
+                  onChange={(e) => setNewRegion(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Phone
+                </label>
+                <input
+                  type="text"
+                  value={newPhone}
+                  onChange={(e) => setNewPhone(e.target.value)}
+                  placeholder="+2519..."
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Telebirr Account
+                </label>
+                <input
+                  type="text"
+                  value={newTelebirr}
+                  onChange={(e) => setNewTelebirr(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  CBE Account
+                </label>
+                <input
+                  type="text"
+                  value={newCbe}
+                  onChange={(e) => setNewCbe(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Initial Password (optional, min 6 chars)
+                </label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={creatingAgent}
+                className="w-full py-2.5 rounded-xl bg-[#0B1B36] hover:bg-[#162d57] text-white font-semibold text-xs transition disabled:opacity-50 cursor-pointer"
+              >
+                {creatingAgent ? 'Creating...' : 'Create Super Agent'}
+              </button>
+            </form>
+
+            <div className="lg:col-span-2 bg-white border border-[#AEB8C4]/40 rounded-3xl p-6 shadow-xs space-y-5">
+              <div className="flex items-center justify-between border-b border-[#AEB8C4]/30 pb-3">
+                <h2 className="text-base font-bold text-[#0B1B36] flex items-center gap-2">
+                  <SlidersHorizontal size={16} />
+                  <span>Super Agent Nodes</span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => fetchSuperAgents(true)}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-xl bg-[#F5F7FA] hover:bg-slate-200/70 text-[#0B1B36] border border-[#AEB8C4]/40 transition cursor-pointer"
+                >
+                  Refresh Nodes
+                </button>
+              </div>
+
+              {loadingAgents ? (
+                <p className="text-xs text-[#536171] py-6">Loading Super Agents...</p>
+              ) : groupedSuperAgents.length === 0 ? (
+                <p className="text-xs text-[#536171] py-6">No Super Agents registered yet.</p>
+              ) : (
+                <div className="space-y-6">
+                  {groupedSuperAgents.map((group) => (
+                    <div key={group.dateKey} className="space-y-2">
+                      <div className="flex items-center justify-between px-3.5 py-2 bg-[#F5F7FA] border border-[#AEB8C4]/30 rounded-xl">
+                        <div className="flex items-center gap-2 text-xs font-bold text-[#0B1B36]">
+                          <Calendar size={13} />
+                          <span>{group.dateLabel}</span>
+                        </div>
+                        <span className="text-[11px] font-semibold text-[#536171]">
+                          {group.items.length} {group.items.length === 1 ? 'node' : 'nodes'}
+                        </span>
+                      </div>
+
+                      <div className="divide-y divide-[#AEB8C4]/25 border border-[#AEB8C4]/30 rounded-2xl px-4 bg-white">
+                        {group.items.map((agent) => (
+                          <div
+                            key={agent.id}
+                            className="py-4 flex flex-wrap items-center justify-between gap-3"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-sm text-[#0B1B36]">
+                                  {agent.name}
+                                </span>
+                                <span
+                                  className={`text-[11px] font-semibold capitalize px-2.5 py-0.5 rounded-full border ${getStatusBadgeStyle(
+                                    agent.status || 'active'
+                                  )}`}
+                                >
+                                  {agent.status || 'active'}
+                                </span>
+                              </div>
+                              <div className="text-xs text-[#536171]">
+                                Region: <strong className="text-[#0B1B36]">{agent.region}</strong>
+                                {agent.phone ? ` • Phone: ${agent.phone}` : ''}
+                              </div>
+                              <div className="text-[11px] font-mono text-[#536171]">
+                                Telebirr: {agent.telebirr_account || '-'} • CBE:{' '}
+                                {agent.cbe_account || '-'}
+                              </div>
+                              <div className="text-[10px] text-[#536171]">
+                                Created: {formatDateTime(agent.created_at)}
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => openEditAgentModal(agent)}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#F5F7FA] hover:bg-[#0B1B36] text-[#0B1B36] hover:text-white border border-[#AEB8C4]/50 text-xs font-semibold transition cursor-pointer"
+                            >
+                              <KeyRound size={13} />
+                              <span>Edit / Reset</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Confirm Bulk Agent Deletion */}
+        {confirmBulkDeleteOpen && (
+          <div className="fixed inset-0 z-50 bg-[#0B1B36]/40 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="w-full max-w-sm bg-white border border-rose-200 rounded-3xl p-6 shadow-2xl space-y-4">
+              <div className="flex items-center gap-3 text-rose-600">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 flex items-center justify-center">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#0B1B36]">Bulk Delete Agents</h3>
+                  <p className="text-xs text-[#536171]">This action cannot be undone</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-[#536171]">
+                Are you sure you want to permanently delete{' '}
+                <strong className="text-[#0B1B36]">
+                  {selectedAgentIds.length} selected agent account
+                  {selectedAgentIds.length > 1 ? 's' : ''}
+                </strong>
+                ? Associated referral links, tasks, transactions, and balances will be removed.
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isBulkDeletingAgents}
+                  onClick={() => setConfirmBulkDeleteOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] text-xs font-semibold transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isBulkDeletingAgents}
+                  onClick={handleBulkDeleteAgents}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                >
+                  {isBulkDeletingAgents ? 'Deleting...' : 'Delete Selected'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Confirm Agent Deletion */}
+        {deletingAgentTarget && (
+          <div className="fixed inset-0 z-50 bg-[#0B1B36]/40 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="w-full max-w-sm bg-white border border-rose-200 rounded-3xl p-6 shadow-2xl space-y-4">
+              <div className="flex items-center gap-3 text-rose-600">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 flex items-center justify-center">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#0B1B36]">Delete Agent Account</h3>
+                  <p className="text-xs text-[#536171]">This action cannot be undone</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-[#536171]">
+                Are you sure you want to permanently delete agent{' '}
+                <strong className="text-[#0B1B36]">
+                  {deletingAgentTarget.full_name ||
+                    deletingAgentTarget.username ||
+                    deletingAgentTarget.id}
+                </strong>
+                ? Associated referral links, tasks, transactions, and balances will be removed.
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isDeletingAgent}
+                  onClick={() => setDeletingAgentTarget(null)}
+                  className="px-4 py-2 rounded-xl bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] text-xs font-semibold transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingAgent}
+                  onClick={handleDeleteAgentAccount}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                >
+                  {isDeletingAgent ? 'Deleting...' : 'Delete Permanently'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal: Referrals, Tasks & Commission Breakdown */}
+        {selectedAgentForTree && (
+          <div className="fixed inset-0 z-50 bg-[#0B1B36]/40 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="w-full max-w-lg bg-white border border-[#AEB8C4]/50 rounded-3xl p-6 shadow-2xl space-y-4">
+              <div className="flex items-center justify-between border-b border-[#AEB8C4]/30 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-[#0B1B36]">
+                    Referral Network, Tasks &amp; Commission
+                  </h3>
+                  <p className="text-xs text-[#536171]">
+                    Agent:{' '}
+                    <strong className="text-[#0B1B36]">
+                      {selectedAgentForTree.full_name ||
+                        selectedAgentForTree.username ||
+                        selectedAgentForTree.phone}
+                    </strong>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedAgentForTree(null)}
+                  className="p-1.5 rounded-xl text-[#536171] hover:text-[#0B1B36] hover:bg-[#F5F7FA] cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {(() => {
+                const m = commissionMap[selectedAgentForTree.id] || {
+                  todayTasks: 0,
+                  totalTasks: 0,
+                  taskCommission: 0,
+                  referralCommission: 0,
+                  totalCommission: 0,
+                };
+                return (
+                  <div className="grid grid-cols-3 gap-2.5 bg-[#F5F7FA] border border-[#AEB8C4]/40 rounded-2xl p-3.5 text-xs">
+                    <div>
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#536171] block">
+                        Daily Tasks
+                      </span>
+                      <span className="font-bold text-sm text-[#0B1B36]">
+                        {m.todayTasks} today / {m.totalTasks} total
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#536171] block">
+                        Task + Ref Comm.
+                      </span>
+                      <span className="font-bold text-sm text-emerald-700">
+                        ETB {m.totalCommission.toLocaleString()}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-[#536171] block">
+                        Breakdown
+                      </span>
+                      <span className="font-mono text-[11px] text-[#0B1B36]">
+                        T:{m.taskCommission} • R:{m.referralCommission}
+                      </span>
+                    </div>
                   </div>
-                ) : superAgents.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-[#0B1B36]/60">
-                    No Super Agent nodes configured in pool.
+                );
+              })()}
+
+              <div className="bg-[#F5F7FA] border border-[#AEB8C4]/40 rounded-2xl p-3.5 text-xs">
+                <span className="font-semibold text-[#536171] uppercase tracking-wider text-[10px] block mb-1">
+                  Invited By (Parent)
+                </span>
+                {inviterMap[selectedAgentForTree.id] ? (
+                  <div className="flex items-center gap-2">
+                    <GitBranch size={14} className="text-[#0B1B36]" />
+                    <span className="font-bold text-[#0B1B36]">
+                      {inviterMap[selectedAgentForTree.id].full_name ||
+                        inviterMap[selectedAgentForTree.id].username ||
+                        inviterMap[selectedAgentForTree.id].phone}
+                    </span>
+                    <span className="text-[11px] text-[#536171]">
+                      (Bal: ETB{' '}
+                      {roundMoney(
+                        parseNumericValue(inviterMap[selectedAgentForTree.id].balance)
+                      ).toLocaleString()}
+                      )
+                    </span>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {superAgents.map((agent) => (
-                      <div key={agent.id} className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#0B1B36]/15 space-y-3 flex flex-col justify-between">
-                        <div className="space-y-1">
-                          <div className="flex justify-between items-start">
-                            <h3 className="font-extrabold text-[#0B1B36] text-sm">{agent.name}</h3>
-                            <span className="px-2.5 py-0.5 rounded-full bg-[#0B1B36]/10 text-[#0B1B36] text-[10px] font-bold">
-                              {agent.region || 'Central'}
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-[#0B1B36]/70 space-y-0.5 pt-1">
-                            <div><strong>Telebirr:</strong> {agent.telebirr_account || agent.phone || 'N/A'}</div>
-                            <div><strong>CBE:</strong> {agent.cbe_account || 'N/A'}</div>
-                          </div>
-                        </div>
+                  <span className="text-[#536171] italic">Direct Registration (No Referrer)</span>
+                )}
+              </div>
 
-                        <div className="pt-2 border-t border-[#0B1B36]/10 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => setSelectedAgentDetail(agent)}
-                              className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-[#0B1B36] hover:text-white border border-[#0B1B36]/20 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-xs"
+              <div className="space-y-2">
+                <span className="font-semibold text-[#536171] uppercase tracking-wider text-[10px] block">
+                  Direct Referrals Onboarded (
+                  {invitedChildrenMap[selectedAgentForTree.id]?.length || 0})
+                </span>
+                {invitedChildrenMap[selectedAgentForTree.id]?.length ? (
+                  <div className="space-y-3 max-h-64 overflow-y-auto border border-[#AEB8C4]/40 rounded-2xl bg-white p-3">
+                    {groupItemsByDate(
+                      [...(invitedChildrenMap[selectedAgentForTree.id] || [])].sort((a, b) =>
+                        compareByDateTime(a, b, sortDirection)
+                      ),
+                      sortDirection
+                    ).map((childGroup) => (
+                      <div key={childGroup.dateKey} className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-[#536171] px-2 py-1 bg-[#F5F7FA] rounded-lg">
+                          {childGroup.dateLabel}
+                        </div>
+                        <div className="divide-y divide-[#AEB8C4]/20">
+                          {childGroup.items.map((child) => (
+                            <div
+                              key={child.id}
+                              className="py-2 px-2.5 flex items-center justify-between text-xs hover:bg-[#F5F7FA] rounded-xl"
                             >
-                              <Eye size={12} /> View
-                            </button>
-                            <button
-                              onClick={() => handleOpenEditModal(agent)}
-                              className="px-2.5 py-1.5 rounded-xl bg-[#0B1B36] text-white font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-xs hover:bg-[#152d56]"
-                            >
-                              <Edit3 size={12} /> Edit
-                            </button>
-                          </div>
-                          <button
-                            onClick={() => handleDeleteSuperAgent(agent.id)}
-                            className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 font-bold text-xs transition flex items-center gap-1 cursor-pointer shadow-xs border border-rose-200"
-                          >
-                            <Trash2 size={12} /> Remove
-                          </button>
+                              <div>
+                                <div className="font-semibold text-[#0B1B36]">
+                                  {child.full_name || child.username || child.phone}
+                                </div>
+                                <div className="text-[10px] text-[#536171]">
+                                  {child.email || child.id} • {formatDateTime(child.created_at)}
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <div className="font-bold text-emerald-700">
+                                  ETB {roundMoney(parseNumericValue(child.balance)).toLocaleString()}
+                                </div>
+                                <div className="text-[10px] text-[#536171]">
+                                  {child.status || 'active'}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     ))}
                   </div>
+                ) : (
+                  <p className="text-xs text-[#536171] py-4 text-center border border-dashed border-[#AEB8C4]/40 rounded-2xl">
+                    This agent has not invited any sub-agents yet.
+                  </p>
                 )}
               </div>
 
+              <div className="pt-2 text-right">
+                <button
+                  type="button"
+                  onClick={() => setSelectedAgentForTree(null)}
+                  className="px-4 py-2 rounded-xl bg-[#0B1B36] text-white text-xs font-semibold transition cursor-pointer"
+                >
+                  Close Network
+                </button>
+              </div>
             </div>
-
           </div>
         )}
 
-      </main>
+        {/* Edit / Reset Password Modal */}
+        {editingAgent && (
+          <div className="fixed inset-0 z-50 bg-[#0B1B36]/40 backdrop-blur-xs flex items-center justify-center p-4">
+            <form
+              onSubmit={handleSaveAgentChanges}
+              className="w-full max-w-md bg-white border border-[#AEB8C4]/50 rounded-3xl p-6 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between border-b border-[#AEB8C4]/30 pb-3">
+                <h3 className="text-base font-bold text-[#0B1B36]">
+                  Edit / Reset Super Agent
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingAgent(null);
+                    setEditPassword('');
+                  }}
+                  className="p-1.5 rounded-xl text-[#536171] hover:text-[#0B1B36] hover:bg-[#F5F7FA] cursor-pointer"
+                >
+                  <X size={16} />
+                </button>
+              </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Region *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editRegion}
+                  onChange={(e) => setEditRegion(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Phone
+                </label>
+                <input
+                  type="text"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#536171] mb-1">
+                    Telebirr
+                  </label>
+                  <input
+                    type="text"
+                    value={editTelebirr}
+                    onChange={(e) => setEditTelebirr(e.target.value)}
+                    className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#536171] mb-1">
+                    CBE
+                  </label>
+                  <input
+                    type="text"
+                    value={editCbe}
+                    onChange={(e) => setEditCbe(e.target.value)}
+                    className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#536171] mb-1">
+                  Status
+                </label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                >
+                  <option value="active">active</option>
+                  <option value="suspended">suspended</option>
+                  <option value="inactive">inactive</option>
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-[#536171]">
+                    Reset Login Password (optional)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateTempPassword}
+                    className="text-xs font-semibold text-[#0B1B36] hover:underline cursor-pointer"
+                  >
+                    Generate Temp Password
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  placeholder="Leave blank to keep current password"
+                  className="w-full bg-[#F5F7FA] border border-[#AEB8C4]/50 rounded-xl px-3.5 py-2 text-xs font-mono text-[#0B1B36] focus:outline-none focus:border-[#0B1B36] focus:bg-white transition"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-3 border-t border-[#AEB8C4]/30">
+                <button
+                  type="button"
+                  disabled={deletingSuperAgent}
+                  onClick={handleDeleteSuperAgentNode}
+                  className="px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold transition disabled:opacity-50 flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 size={13} />
+                  <span>{deletingSuperAgent ? 'Deleting...' : 'Delete Node'}</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingAgent(null);
+                      setEditPassword('');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-[#F5F7FA] hover:bg-slate-200/70 text-[#536171] text-xs font-semibold transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit}
+                    className="px-4 py-2 rounded-xl bg-[#0B1B36] hover:bg-[#162d57] text-white text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                  >
+                    {savingEdit ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
