@@ -479,7 +479,10 @@ export default function WalletPage() {
 
   const activeTierConfig = MARKETPLACE_TIERS[agentCategory] || MARKETPLACE_TIERS.Furniture;
   const todayTaskYieldEarned = roundMoney(tasksCompletedToday * activeTierConfig.taskYieldNum);
-  const withdrawableProfit = Math.max(0, roundMoney(dbEarnings));
+  const withdrawableProfit = Math.max(
+    0,
+    roundMoney(referralProfitEarned + todayTaskYieldEarned)
+  );
   const totalAccountValue = roundMoney(dbCapital + withdrawableProfit);
 
   const groupedRequests = useMemo(() => groupTransactionsByDate(requests), [requests]);
@@ -880,16 +883,14 @@ export default function WalletPage() {
                     <label className="font-bold text-[#536171] uppercase text-[10px]">
                       Payment Receipt Screenshot *
                     </label>
-                    <label className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] flex items-center justify-center gap-2 cursor-pointer font-bold text-[11px] text-[#536171] transition">
+                    <label className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] flex items-center justify-center gap-2 cursor-pointer font-bold text-xs text-[#536171]">
                       <Upload size={14} />
                       <span className="truncate">
-                        {receiptFile
-                          ? receiptFile.name
-                          : 'Upload receipt image (PNG/JPG)'}
+                        {receiptFile ? receiptFile.name : 'Choose Receipt Image'}
                       </span>
                       <input
                         type="file"
-                        accept="image/png,image/jpeg,image/webp"
+                        accept="image/*"
                         onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
                         className="hidden"
                       />
@@ -897,30 +898,22 @@ export default function WalletPage() {
                   </div>
                 </div>
               ) : (
-                <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 flex flex-wrap items-center justify-between gap-3 text-[11px]">
-                  <div>
-                    <span className="text-[#536171]">3% Withdrawal Fee: </span>
-                    <strong className="text-[#0B1B36]">
-                      ETB {withdrawalFeeAmount.toLocaleString()}
-                    </strong>
-                  </div>
-                  <div>
-                    <span className="text-[#536171]">Estimated Net Payout: </span>
-                    <strong className="text-emerald-700">
-                      ETB {Math.max(0, netWithdrawalPayout).toLocaleString()}
-                    </strong>
-                  </div>
+                <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#536171]">
+                  <span>Withdrawal Fee (3%): ETB {withdrawalFeeAmount.toFixed(2)}</span>
+                  <span className="font-bold text-[#0B1B36]">
+                    Estimated Net Payout: ETB {netWithdrawalPayout.toFixed(2)}
+                  </span>
                 </div>
               )}
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 rounded-2xl bg-[#0B1B36] hover:bg-[#132C56] disabled:opacity-60 text-white font-extrabold uppercase tracking-wider text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                className="w-full py-3.5 rounded-2xl bg-[#0B1B36] hover:bg-[#0E2447] disabled:opacity-60 text-white font-extrabold uppercase tracking-wider text-xs transition cursor-pointer flex items-center justify-center gap-2"
               >
                 {loading ? (
                   <>
-                    <Loader2 size={15} className="animate-spin" /> Submitting...
+                    <Loader2 size={15} className="animate-spin" /> Processing...
                   </>
                 ) : activeTab === 'deposit' ? (
                   'Submit Deposit Request'
@@ -933,14 +926,17 @@ export default function WalletPage() {
 
           <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-5 font-mono">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm font-extrabold uppercase tracking-wider text-[#0B1B36]">
-                Transaction History ({requests.length})
+              <h2 className="text-sm sm:text-base font-extrabold uppercase tracking-wide text-[#0B1B36]">
+                Transaction History
               </h2>
+              <span className="text-[11px] text-[#536171] font-bold">
+                {requests.length} {requests.length === 1 ? 'record' : 'records'}
+              </span>
             </div>
 
             {groupedRequests.length === 0 ? (
               <div className="py-10 text-center text-xs text-[#536171]">
-                No transactions recorded yet.
+                No wallet transactions recorded yet.
               </div>
             ) : (
               <div className="space-y-6">
@@ -950,37 +946,50 @@ export default function WalletPage() {
                       <Calendar size={13} />
                       <span>{group.dateLabel}</span>
                     </div>
-
                     <div className="divide-y divide-[#AEB8C4]/25 border border-[#AEB8C4]/35 rounded-2xl overflow-hidden">
-                      {group.items.map((tx) => (
+                      {group.items.map((item) => (
                         <div
-                          key={tx.id}
-                          className="p-4 bg-white hover:bg-[#F5F7FA]/70 transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          key={item.id}
+                          className="p-4 bg-[#FAFBFD] hover:bg-white transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
                         >
                           <div className="space-y-1">
-                            <div className="font-extrabold uppercase text-[#0B1B36]">
-                              {tx.type} • {tx.method}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-extrabold uppercase text-[#0B1B36]">
+                                {item.type}
+                              </span>
+                              <span className="text-[#536171] uppercase text-[11px]">
+                                • {item.method}
+                              </span>
+                              {renderStatusBadge(item.status)}
                             </div>
                             <div className="text-[11px] text-[#536171]">
-                              Account: {tx.sender_or_receiver_number} • Node: {tx.super_agent_name}
+                              Account: {item.sender_or_receiver_number} • Node:{' '}
+                              {item.super_agent_name}
+                              {item.transaction_ref ? ` • Ref: ${item.transaction_ref}` : ''}
                             </div>
-                            {tx.receipt_url && (
-                              <a
-                                href={tx.receipt_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline"
-                              >
-                                View Receipt <ExternalLink size={11} />
-                              </a>
-                            )}
                           </div>
 
-                          <div className="flex sm:flex-col items-center sm:items-end justify-between gap-1.5">
-                            <div className="font-extrabold text-sm text-[#0B1B36]">
-                              ETB {parseNum(tx.amount).toLocaleString()}
+                          <div className="flex items-center gap-4">
+                            {item.receipt_url && (
+                              <a
+                                href={item.receipt_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[11px] font-bold text-[#0B1B36] hover:underline"
+                              >
+                                Receipt <ExternalLink size={12} />
+                              </a>
+                            )}
+                            <div className="text-right">
+                              <div className="font-extrabold text-[#0B1B36]">
+                                ETB {parseNum(item.amount).toLocaleString()}
+                              </div>
+                              {item.type === 'withdrawal' && item.net_amount != null && (
+                                <div className="text-[10px] text-[#536171]">
+                                  Net: ETB {parseNum(item.net_amount).toLocaleString()}
+                                </div>
+                              )}
                             </div>
-                            {renderStatusBadge(tx.status)}
                           </div>
                         </div>
                       ))}
