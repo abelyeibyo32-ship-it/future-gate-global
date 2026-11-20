@@ -1128,7 +1128,7 @@ export default function AdminDashboardPage() {
 
     const totalFggCap = roundMoney(
       agents.reduce((sum, a) => {
-        const record = a as Record<string, unknown>;
+        const record = a as unknown as Record<string, unknown>;
         const rawCap =
           record.fgg_cap ??
           record.fggCap ??
