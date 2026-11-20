@@ -307,7 +307,7 @@ export default function WalletPage() {
 
   const [agentCategory, setAgentCategory] = useState<string>('Furniture');
   const [dbCapital, setDbCapital] = useState<number>(24000);
-  const [, setDbEarnings] = useState<number>(0);
+  const [dbEarnings, setDbEarnings] = useState<number>(0);
   const [referralProfitEarned, setReferralProfitEarned] = useState<number>(0);
   const [tasksCompletedToday, setTasksCompletedToday] = useState<number>(0);
   const [currentUserId, setCurrentUserId] = useState<string>('');
@@ -398,7 +398,7 @@ export default function WalletPage() {
 
         const authoritativeBalance =
           agentData?.balance != null && !Number.isNaN(Number(agentData.balance))
-            ? roundMoney(parseNum(agentData.balance))
+            ? Math.max(0, roundMoney(parseNum(agentData.balance)))
             : 0;
 
         const category = resolveCategory(agentData?.tier);
@@ -501,14 +501,15 @@ export default function WalletPage() {
 
   const activeTierConfig = MARKETPLACE_TIERS[agentCategory] || MARKETPLACE_TIERS.Furniture;
   const todayTaskYieldEarned = roundMoney(tasksCompletedToday * activeTierConfig.taskYieldNum);
-  const withdrawableProfit = Math.max(0, roundMoney(referralProfitEarned + todayTaskYieldEarned));
+
+  // Authoritative balance from public.agents.balance (already reflects tasks minus approved withdrawals)
+  const withdrawableProfit = Math.max(0, roundMoney(dbEarnings));
   const totalAccountValue = roundMoney(dbCapital + withdrawableProfit);
 
   const groupedRequests = useMemo(() => groupTransactionsByDate(requests), [requests]);
 
   const numericInputAmount = Number(amount) || 0;
   const withdrawalFeeAmount = roundMoney(numericInputAmount * WITHDRAWAL_FEE_RATE);
-  const totalWithdrawalDeduction = roundMoney(numericInputAmount);
   const netWithdrawalPayout = roundMoney(numericInputAmount - withdrawalFeeAmount);
 
   const handleTabSwitch = (nextTab: 'deposit' | 'withdrawal') => {
@@ -680,6 +681,7 @@ export default function WalletPage() {
         <header className="bg-white/95 backdrop-blur-md border-b border-[#AEB8C4]/40 px-4 sm:px-8 py-3.5 flex items-center justify-between sticky top-0 z-30 font-mono">
           <div className="flex items-center gap-3">
             <button
+              type="button"
               onClick={() => setIsMobileMenuOpen(true)}
               className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl border border-[#AEB8C4]/30"
             >
@@ -697,6 +699,7 @@ export default function WalletPage() {
 
           <div className="flex items-center gap-3">
             <button
+              type="button"
               onClick={() => fetchData(true)}
               disabled={isRefreshing}
               className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-[#0B1B36] hover:text-white border border-[#AEB8C4]/40 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
@@ -771,9 +774,9 @@ export default function WalletPage() {
                     ETB {withdrawableProfit.toLocaleString()}
                   </div>
                   <div className="text-[10px] text-white/60">
-                    Referral (7%): ETB {referralProfitEarned.toFixed(2)} • Tasks:{' '}
-                    {tasksCompletedToday}/{activeTierConfig.maxTasks} (+ETB{' '}
-                    {todayTaskYieldEarned.toFixed(2)})
+                    Synced from Ledger • Today Tasks: {tasksCompletedToday}/
+                    {activeTierConfig.maxTasks} (+ETB {todayTaskYieldEarned.toFixed(2)}) • Ref: ETB{' '}
+                    {referralProfitEarned.toFixed(2)}
                   </div>
                 </div>
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
@@ -885,7 +888,7 @@ export default function WalletPage() {
                               ? 'bg-[#0B1B36] text-white border-[#0B1B36]'
                               : canAfford
                               ? 'bg-[#F5F7FA] hover:bg-slate-200/70 text-[#0B1B36] border-[#AEB8C4]/50'
-                              : 'bg-[#F5F7FA]/60 text-[#536171] border-[#AEB8C4]/30'
+                              : 'bg-[#F5F7FA]/60 text-[#536171]/60 border-[#AEB8C4]/30'
                           }`}
                         >
                           <div className="font-extrabold text-xs">
@@ -893,10 +896,10 @@ export default function WalletPage() {
                           </div>
                           <div
                             className={`text-[10px] ${
-                              isSelected ? 'text-white/75' : 'text-[#536171]'
+                              isSelected ? 'text-emerald-300' : 'text-emerald-700'
                             }`}
                           >
-                            -3% ({fee.toFixed(2)}) • Net {net.toLocaleString()}
+                            Net: {net.toLocaleString()} (-{fee.toFixed(0)})
                           </div>
                         </button>
                       );
@@ -906,95 +909,108 @@ export default function WalletPage() {
               )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="font-bold text-[#536171] uppercase text-[10px]">
-                    {activeTab === 'withdrawal'
-                      ? 'Selected Withdrawal Amount (ETB)'
-                      : 'Deposit Amount (ETB)'}
+                <div className="space-y-1.5">
+                  <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
+                    Amount (ETB)
                   </label>
                   <input
                     type="number"
-                    step="0.01"
-                    min="1"
-                    readOnly={activeTab === 'withdrawal'}
-                    placeholder={
-                      activeTab === 'withdrawal' ? 'Choose a fixed tier above' : 'e.g. 500'
-                    }
+                    step="any"
                     value={amount}
-                    onChange={(e) => {
-                      if (activeTab === 'deposit') setAmount(e.target.value);
-                    }}
-                    className={`w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs ${
-                      activeTab === 'withdrawal' ? 'cursor-not-allowed opacity-90' : ''
-                    }`}
-                    required
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder={
+                      activeTab === 'withdrawal' ? 'Select a preset tier above' : 'Enter amount'
+                    }
+                    className="w-full p-3.5 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:border-[#0B1B36] focus:outline-none font-bold text-[#0B1B36]"
                   />
                 </div>
-                <div className="space-y-1">
-                  <label className="font-bold text-[#536171] uppercase text-[10px]">
-                    {method === 'telebirr' ? 'Sender Telebirr Number' : 'Sender CBE Account Number'}
+
+                <div className="space-y-1.5">
+                  <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
+                    {method === 'telebirr'
+                      ? activeTab === 'deposit'
+                        ? 'Sender Telebirr Phone'
+                        : 'Receiver Telebirr Phone'
+                      : activeTab === 'deposit'
+                      ? 'Sender CBE Account'
+                      : 'Receiver CBE Account'}
                   </label>
                   <input
                     type="text"
-                    placeholder={method === 'telebirr' ? '09xxxxxxxx' : '1000xxxxxxxx'}
                     value={accountNumber}
                     onChange={(e) => setAccountNumber(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
-                    required
+                    placeholder={method === 'telebirr' ? '09XXXXXXXX' : '1000XXXXXXXXX'}
+                    className="w-full p-3.5 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:border-[#0B1B36] focus:outline-none font-bold text-[#0B1B36]"
                   />
                 </div>
               </div>
 
-              {activeTab === 'deposit' ? (
+              {activeTab === 'withdrawal' && numericInputAmount > 0 && (
+                <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/40 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div>
+                    <span className="text-[#536171]">Deduction:</span>{' '}
+                    <strong className="text-[#0B1B36]">
+                      ETB {numericInputAmount.toLocaleString()}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[#536171]">Fee (3%):</span>{' '}
+                    <strong className="text-amber-700">
+                      -ETB {withdrawalFeeAmount.toFixed(2)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[#536171]">Net Payout:</span>{' '}
+                    <strong className="text-emerald-700">
+                      ETB {netWithdrawalPayout.toFixed(2)}
+                    </strong>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'deposit' && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="font-bold text-[#536171] uppercase text-[10px]">
+                  <div className="space-y-1.5">
+                    <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
                       Transaction Reference (Optional)
                     </label>
                     <input
                       type="text"
-                      placeholder="e.g. FT26323..."
                       value={transactionRef}
                       onChange={(e) => setTransactionRef(e.target.value)}
-                      className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
+                      placeholder="e.g. FT26324..."
+                      className="w-full p-3.5 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:border-[#0B1B36] focus:outline-none font-bold text-[#0B1B36]"
                     />
                   </div>
-                  <div className="space-y-1">
-                    <label className="font-bold text-[#536171] uppercase text-[10px]">
-                      Payment Receipt Screenshot *
+
+                  <div className="space-y-1.5">
+                    <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
+                      Receipt Screenshot Proof (Required)
                     </label>
-                    <label className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] flex items-center justify-center gap-2 cursor-pointer font-bold text-xs text-[#536171]">
-                      <Upload size={14} />
+                    <label className="w-full p-3.5 rounded-2xl bg-[#F5F7FA] border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] cursor-pointer flex items-center justify-between gap-2 text-[#0B1B36] font-bold transition">
                       <span className="truncate">
-                        {receiptFile ? receiptFile.name : 'Choose Receipt Image'}
+                        {receiptFile ? receiptFile.name : 'Choose screenshot image...'}
                       </span>
+                      <Upload size={16} className="shrink-0" />
                       <input
                         type="file"
                         accept="image/*"
-                        onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
                         className="hidden"
+                        onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
                       />
                     </label>
                   </div>
-                </div>
-              ) : (
-                <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#536171]">
-                  <span>Deducted: ETB {totalWithdrawalDeduction.toFixed(2)}</span>
-                  <span>Fee (-3%): -ETB {withdrawalFeeAmount.toFixed(2)}</span>
-                  <span className="font-bold text-[#0B1B36]">
-                    Net Payout: ETB {netWithdrawalPayout.toFixed(2)}
-                  </span>
                 </div>
               )}
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 rounded-2xl bg-[#0B1B36] hover:bg-[#0E2447] disabled:opacity-60 text-white font-extrabold uppercase tracking-wider text-xs transition cursor-pointer flex items-center justify-center gap-2"
+                className="w-full py-4 rounded-xl bg-[#0B1B36] hover:bg-[#152d56] disabled:bg-slate-400 text-white font-bold uppercase tracking-wider transition shadow-md cursor-pointer flex items-center justify-center gap-2 text-xs"
               >
                 {loading ? (
                   <>
-                    <Loader2 size={15} className="animate-spin" /> Processing...
+                    <Loader2 size={15} className="animate-spin" /> Submitting Request...
                   </>
                 ) : activeTab === 'deposit' ? (
                   'Submit Deposit Request'
@@ -1005,75 +1021,95 @@ export default function WalletPage() {
             </form>
           </div>
 
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-5 font-mono">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-6 font-mono">
             <div className="flex items-center justify-between">
-              <h2 className="text-sm sm:text-base font-extrabold uppercase tracking-wide text-[#0B1B36]">
-                Transaction History
+              <h2 className="text-base font-extrabold text-[#0B1B36]">
+                Transaction Ledger History
               </h2>
-              <span className="text-[11px] text-[#536171] font-bold">
+              <span className="text-xs text-[#536171] font-bold">
                 {requests.length} {requests.length === 1 ? 'record' : 'records'}
               </span>
             </div>
 
             {groupedRequests.length === 0 ? (
-              <div className="py-10 text-center text-xs text-[#536171]">
-                No wallet transactions recorded yet.
+              <div className="py-10 text-center text-xs text-[#536171] bg-[#F5F7FA] rounded-2xl border border-[#AEB8C4]/30">
+                No deposit or withdrawal requests found for this account yet.
               </div>
             ) : (
               <div className="space-y-6">
                 {groupedRequests.map((group) => (
-                  <div key={group.dateKey} className="space-y-2.5">
-                    <div className="flex items-center gap-2 text-[11px] font-bold text-[#536171] uppercase tracking-wider">
+                  <div key={group.dateKey} className="space-y-3">
+                    <div className="flex items-center gap-2 text-[11px] font-extrabold text-[#536171] uppercase tracking-wider">
                       <Calendar size={13} />
                       <span>{group.dateLabel}</span>
                     </div>
-                    <div className="divide-y divide-[#AEB8C4]/25 border border-[#AEB8C4]/35 rounded-2xl overflow-hidden">
-                      {group.items.map((item) => (
-                        <div
-                          key={item.id}
-                          className="p-4 bg-[#FAFBFD] hover:bg-white transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                        >
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-extrabold uppercase text-[#0B1B36]">
-                                {item.type}
-                              </span>
-                              <span className="text-[#536171] uppercase text-[11px]">
-                                • {item.method}
-                              </span>
-                              {renderStatusBadge(item.status)}
-                            </div>
-                            <div className="text-[11px] text-[#536171]">
-                              Account: {item.sender_or_receiver_number} • Node:{' '}
-                              {item.super_agent_name}
-                              {item.transaction_ref ? ` • Ref: ${item.transaction_ref}` : ''}
-                            </div>
-                          </div>
 
-                          <div className="flex items-center gap-4">
-                            {item.receipt_url && (
-                              <a
-                                href={item.receipt_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-[11px] font-bold text-[#0B1B36] hover:underline"
-                              >
-                                Receipt <ExternalLink size={12} />
-                              </a>
-                            )}
-                            <div className="text-right">
-                              <div className="font-extrabold text-[#0B1B36]">
-                                ETB {parseNum(item.amount).toLocaleString()}
+                    <div className="space-y-2.5">
+                      {group.items.map((tx) => {
+                        const isWithdrawal = tx.type === 'withdrawal';
+                        const txAmount = roundMoney(parseNum(tx.amount));
+                        const txNet =
+                          tx.net_amount != null
+                            ? roundMoney(parseNum(tx.net_amount))
+                            : isWithdrawal
+                            ? roundMoney(txAmount * (1 - WITHDRAWAL_FEE_RATE))
+                            : txAmount;
+
+                        return (
+                          <div
+                            key={tx.id}
+                            className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/35 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center flex-wrap gap-2">
+                                <span className="font-extrabold uppercase text-[#0B1B36]">
+                                  {tx.type}
+                                </span>
+                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-white border border-[#AEB8C4]/40 text-[#536171] font-bold uppercase">
+                                  {tx.method}
+                                </span>
+                                {renderStatusBadge(tx.status)}
                               </div>
-                              {item.type === 'withdrawal' && item.net_amount != null && (
-                                <div className="text-[10px] text-[#536171]">
-                                  Net: ETB {parseNum(item.net_amount).toLocaleString()}
-                                </div>
+                              <div className="text-[11px] text-[#536171]">
+                                Ref: <strong className="text-[#0B1B36]">{tx.transaction_ref || '—'}</strong> •{' '}
+                                Account: <strong className="text-[#0B1B36]">{tx.sender_or_receiver_number}</strong> •{' '}
+                                Node: {tx.super_agent_name}
+                              </div>
+                              {tx.receipt_url && (
+                                <a
+                                  href={tx.receipt_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-[11px] font-bold text-[#0B1B36] underline"
+                                >
+                                  View Receipt <ExternalLink size={11} />
+                                </a>
                               )}
                             </div>
+
+                            <div className="sm:text-right space-y-0.5">
+                              <div
+                                className={`text-sm font-extrabold ${
+                                  isWithdrawal ? 'text-rose-700' : 'text-emerald-700'
+                                }`}
+                              >
+                                {isWithdrawal ? '-' : '+'}ETB {txAmount.toLocaleString()}
+                              </div>
+                              {isWithdrawal && (
+                                <div className="text-[10px] text-[#536171]">
+                                  Net payout: ETB {txNet.toFixed(2)}
+                                </div>
+                              )}
+                              <div className="text-[10px] text-[#536171]">
+                                {new Date(tx.created_at).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
