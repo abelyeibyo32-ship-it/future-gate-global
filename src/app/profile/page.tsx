@@ -149,7 +149,7 @@ export default function ProfilePage() {
       const { data: referredAgents, error: refError } = await supabase
         .from('agents')
         .select('id, referred_by')
-        .eq('referred_by', userId); // FIXED: Correctly query referred_by using the user's UUID
+        .eq('referred_by', userId);
 
       if (!refError && referredAgents && referredAgents.length > 0) {
         totalCount = referredAgents.length;
@@ -283,7 +283,7 @@ export default function ProfilePage() {
               <h3 className="text-base font-extrabold text-[#0B1B36] flex items-center gap-2">
                 <KeyRound size={18} /> Update Password
               </h3>
-              <button onClick={() => setIsPasswordModalOpen(false)} className="p-1 hover:bg-slate-100 rounded-lg text-slate-500">
+              <button onClick={() => setIsPasswordModalOpen(false)} className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 cursor-pointer">
                 <X size={18} />
               </button>
             </div>
@@ -317,14 +317,14 @@ export default function ProfilePage() {
                 <button
                   type="button"
                   onClick={() => setIsPasswordModalOpen(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-200 text-[#0B1B36] font-bold text-xs"
+                  className="px-4 py-2.5 rounded-xl bg-slate-200 text-[#0B1B36] font-bold text-xs cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isUpdatingPassword}
-                  className="px-5 py-2.5 rounded-xl bg-[#0B1B36] text-white font-bold text-xs flex items-center gap-2"
+                  className="px-5 py-2.5 rounded-xl bg-[#0B1B36] text-white font-bold text-xs flex items-center gap-2 cursor-pointer"
                 >
                   {isUpdatingPassword && <Loader2 size={14} className="animate-spin" />}
                   Update Password
@@ -349,7 +349,7 @@ export default function ProfilePage() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsMobileMenuOpen(true)}
-              className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl transition border border-[#AEB8C4]/30"
+              className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl transition border border-[#AEB8C4]/30 cursor-pointer"
               aria-label="Open menu"
             >
               <Menu size={19} />

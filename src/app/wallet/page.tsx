@@ -23,9 +23,12 @@ import { useFGGSystem } from '@/lib/useFGGSystem';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
 
-const WITHDRAWAL_FEE_RATE = 0.03; // 3%
+const WITHDRAWAL_FEE_RATE = 0.03; // -3% fee deducted from withdrawal amount
 const DAILY_YIELD_RATE = 0.037; // 3.7%
 const TASKS_PER_DAY = 5;
+const WITHDRAWAL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const FIXED_WITHDRAWAL_TIERS = [388, 888, 1500, 3500, 5000, 7500, 10000] as const;
+const FIXED_WITHDRAWAL_SET = new Set<number>(FIXED_WITHDRAWAL_TIERS);
 
 interface TransactionRequest {
   id: string;
@@ -304,16 +307,39 @@ export default function WalletPage() {
 
   const [agentCategory, setAgentCategory] = useState<string>('Furniture');
   const [dbCapital, setDbCapital] = useState<number>(24000);
-  const [dbEarnings, setDbEarnings] = useState<number>(0);
+  const [, setDbEarnings] = useState<number>(0);
   const [referralProfitEarned, setReferralProfitEarned] = useState<number>(0);
   const [tasksCompletedToday, setTasksCompletedToday] = useState<number>(0);
   const [currentUserId, setCurrentUserId] = useState<string>('');
 
   const formRef = useRef<HTMLDivElement>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasAssignedNodeRef = useRef(false);
 
   const showToast = useCallback((msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setNotification(msg);
-    setTimeout(() => setNotification(null), 3500);
+    toastTimerRef.current = setTimeout(() => setNotification(null), 3500);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
+
+  const resetSessionState = useCallback(() => {
+    setRequests([]);
+    setDbEarnings(0);
+    setReferralProfitEarned(0);
+    setTasksCompletedToday(0);
+  }, []);
+
+  const pickRandomEscrowNode = useCallback((pool: SuperAgentNode[]) => {
+    if (!pool || pool.length === 0) return;
+    const randomIndex = Math.floor(Math.random() * pool.length);
+    setAssignedNode(pool[randomIndex]);
+    hasAssignedNodeRef.current = true;
   }, []);
 
   const fetchData = useCallback(
@@ -321,15 +347,12 @@ export default function WalletPage() {
       if (manualRefresh) setIsRefreshing(true);
 
       try {
-        const { data: authData } = await supabase.auth.getUser();
+        const { data: authData, error: authError } = await supabase.auth.getUser();
         const userId = cleanId(authData?.user?.id || '');
         setCurrentUserId(userId);
 
-        if (!userId) {
-          setRequests([]);
-          setDbEarnings(0);
-          setReferralProfitEarned(0);
-          setTasksCompletedToday(0);
+        if (authError || !userId) {
+          resetSessionState();
           return;
         }
 
@@ -359,33 +382,29 @@ export default function WalletPage() {
         const txList = !txRes.error && txRes.data ? (txRes.data as TransactionRequest[]) : [];
         const agentData = !agentRes.error ? agentRes.data : null;
 
-        let refProfitTotal = 0;
-        if (!refCommRes.error && refCommRes.data && refCommRes.data.length > 0) {
-          refProfitTotal = roundMoney(
-            refCommRes.data.reduce(
-              (sum: number, row: any) => sum + parseNum(row.commission_amount),
-              0
-            )
-          );
-        }
+        const refProfitTotal =
+          !refCommRes.error && refCommRes.data && refCommRes.data.length > 0
+            ? roundMoney(
+                refCommRes.data.reduce(
+                  (sum: number, row: { commission_amount?: unknown }) =>
+                    sum + parseNum(row.commission_amount),
+                  0
+                )
+              )
+            : 0;
 
         setReferralProfitEarned(refProfitTotal);
-        setTasksCompletedToday(
-          !taskRes.error ? Number(taskRes.data?.completed_count ?? 0) : 0
-        );
+        setTasksCompletedToday(!taskRes.error ? Number(taskRes.data?.completed_count ?? 0) : 0);
 
-        const authoritativeBalance = roundMoney(
+        const authoritativeBalance =
           agentData?.balance != null && !Number.isNaN(Number(agentData.balance))
-            ? parseNum(agentData.balance)
-            : 0
-        );
+            ? roundMoney(parseNum(agentData.balance))
+            : 0;
 
-        const activeTierRaw = agentData?.tier || 'Furniture';
+        const category = resolveCategory(agentData?.tier);
+        const tierConfig = MARKETPLACE_TIERS[category] || MARKETPLACE_TIERS.Furniture;
 
         setRequests(txList);
-
-        const category = resolveCategory(activeTierRaw);
-        const tierConfig = MARKETPLACE_TIERS[category] || MARKETPLACE_TIERS.Furniture;
         setAgentCategory(category);
         setDbCapital(tierConfig.fee);
         setDbEarnings(authoritativeBalance);
@@ -397,31 +416,34 @@ export default function WalletPage() {
         }
       }
     },
-    [showToast]
+    [resetSessionState, showToast]
   );
 
   const fetchInitialData = useCallback(async () => {
     const { data: nodesData } = await supabase.from('super_agents').select('*');
-    if (nodesData && nodesData.length > 0) {
-      setSuperAgentsPool(nodesData as SuperAgentNode[]);
-      const randomIndex = Math.floor(Math.random() * nodesData.length);
-      setAssignedNode(nodesData[randomIndex] as SuperAgentNode);
-    } else {
-      const fallbackNode: SuperAgentNode = {
-        id: 'sa-default',
-        name: 'Central Escrow Node',
-        tier: 'Furniture',
-        region: 'Addis Ababa',
-        phone: '0911223344',
-        telebirr_account: '0911223344',
-        cbe_account: '1000293848592',
-      };
-      setSuperAgentsPool([fallbackNode]);
-      setAssignedNode(fallbackNode);
+    const pool: SuperAgentNode[] =
+      nodesData && nodesData.length > 0
+        ? (nodesData as SuperAgentNode[])
+        : [
+            {
+              id: 'sa-default',
+              name: 'Central Escrow Node',
+              tier: 'Furniture',
+              region: 'Addis Ababa',
+              phone: '0911223344',
+              telebirr_account: '0911223344',
+              cbe_account: '1000293848592',
+            },
+          ];
+
+    setSuperAgentsPool(pool);
+
+    if (!hasAssignedNodeRef.current) {
+      pickRandomEscrowNode(pool);
     }
 
     await fetchData();
-  }, [fetchData]);
+  }, [fetchData, pickRandomEscrowNode]);
 
   useEffect(() => {
     setIsMounted(true);
@@ -479,17 +501,21 @@ export default function WalletPage() {
 
   const activeTierConfig = MARKETPLACE_TIERS[agentCategory] || MARKETPLACE_TIERS.Furniture;
   const todayTaskYieldEarned = roundMoney(tasksCompletedToday * activeTierConfig.taskYieldNum);
-  const withdrawableProfit = Math.max(
-    0,
-    roundMoney(referralProfitEarned + todayTaskYieldEarned)
-  );
+  const withdrawableProfit = Math.max(0, roundMoney(referralProfitEarned + todayTaskYieldEarned));
   const totalAccountValue = roundMoney(dbCapital + withdrawableProfit);
 
   const groupedRequests = useMemo(() => groupTransactionsByDate(requests), [requests]);
 
   const numericInputAmount = Number(amount) || 0;
-  const withdrawalFeeAmount = Number((numericInputAmount * WITHDRAWAL_FEE_RATE).toFixed(2));
-  const netWithdrawalPayout = Number((numericInputAmount - withdrawalFeeAmount).toFixed(2));
+  const withdrawalFeeAmount = roundMoney(numericInputAmount * WITHDRAWAL_FEE_RATE);
+  const totalWithdrawalDeduction = roundMoney(numericInputAmount);
+  const netWithdrawalPayout = roundMoney(numericInputAmount - withdrawalFeeAmount);
+
+  const handleTabSwitch = (nextTab: 'deposit' | 'withdrawal') => {
+    setActiveTab(nextTab);
+    setAmount('');
+    setReceiptFile(null);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -503,8 +529,17 @@ export default function WalletPage() {
     }
 
     const parsedAmount = Number(amount);
-    if (!amount || isNaN(parsedAmount) || parsedAmount <= 0) {
+    if (!amount || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
       showToast('Please enter a valid amount.');
+      return;
+    }
+
+    if (activeTab === 'withdrawal' && !FIXED_WITHDRAWAL_SET.has(parsedAmount)) {
+      showToast(
+        `Please select one of the fixed withdrawal tiers: ${FIXED_WITHDRAWAL_TIERS.map(
+          (v) => `ETB ${v.toLocaleString()}`
+        ).join(', ')}.`
+      );
       return;
     }
 
@@ -515,28 +550,25 @@ export default function WalletPage() {
     }
 
     const feeAmount =
-      activeTab === 'withdrawal'
-        ? Number((parsedAmount * WITHDRAWAL_FEE_RATE).toFixed(2))
-        : 0;
+      activeTab === 'withdrawal' ? roundMoney(parsedAmount * WITHDRAWAL_FEE_RATE) : 0;
+    const totalDebitFromBalance = roundMoney(parsedAmount);
     const netPayout =
-      activeTab === 'withdrawal'
-        ? Number((parsedAmount - feeAmount).toFixed(2))
-        : parsedAmount;
+      activeTab === 'withdrawal' ? roundMoney(parsedAmount - feeAmount) : parsedAmount;
 
     if (activeTab === 'withdrawal') {
-      if (parsedAmount > withdrawableProfit) {
+      if (totalDebitFromBalance > withdrawableProfit) {
         showToast(
-          `Denied: Maximum withdrawable balance is ETB ${withdrawableProfit.toLocaleString()}.`
+          `Denied: Selected withdrawal of ETB ${totalDebitFromBalance.toLocaleString()} exceeds withdrawable balance of ETB ${withdrawableProfit.toLocaleString()}.`
         );
         return;
       }
 
       if (netPayout <= 0) {
-        showToast('Withdrawal amount is too small after the 3% fee.');
+        showToast('Withdrawal amount is invalid after the -3% fee.');
         return;
       }
 
-      const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+      const oneDayAgo = Date.now() - WITHDRAWAL_COOLDOWN_MS;
       const recentWithdrawal = requests.find(
         (req) =>
           req.type === 'withdrawal' &&
@@ -581,7 +613,7 @@ export default function WalletPage() {
         super_agent_name: assignedNode.name,
         type: activeTab,
         method,
-        amount: parsedAmount,
+        amount: totalDebitFromBalance,
         fee_amount: feeAmount,
         net_amount: netPayout,
         sender_or_receiver_number: trimmedAccount,
@@ -606,7 +638,7 @@ export default function WalletPage() {
       showToast(
         activeTab === 'deposit'
           ? `Deposit request of ETB ${parsedAmount.toLocaleString()} submitted successfully.`
-          : `Withdrawal of ETB ${parsedAmount.toLocaleString()} submitted (3% fee: ETB ${feeAmount.toLocaleString()}, Net: ETB ${netPayout.toLocaleString()}).`
+          : `Withdrawal of ETB ${parsedAmount.toLocaleString()} submitted (-3% fee: ETB ${feeAmount.toLocaleString()}, Net payout: ETB ${netPayout.toLocaleString()}).`
       );
 
       setAmount('');
@@ -614,10 +646,8 @@ export default function WalletPage() {
       setTransactionRef('');
       setReceiptFile(null);
 
-      if (superAgentsPool.length > 0) {
-        const randomIdx = Math.floor(Math.random() * superAgentsPool.length);
-        setAssignedNode(superAgentsPool[randomIdx]);
-      }
+      hasAssignedNodeRef.current = false;
+      pickRandomEscrowNode(superAgentsPool);
 
       await fetchData();
     } finally {
@@ -699,7 +729,7 @@ export default function WalletPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setActiveTab('deposit');
+                    handleTabSwitch('deposit');
                     scrollToForm();
                   }}
                   className="px-4 py-2.5 rounded-xl bg-white text-[#0B1B36] hover:bg-[#AEB8C4] transition text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow-sm"
@@ -709,7 +739,7 @@ export default function WalletPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    setActiveTab('withdrawal');
+                    handleTabSwitch('withdrawal');
                     scrollToForm();
                   }}
                   className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/25 transition text-xs font-extrabold cursor-pointer flex items-center gap-1.5 border border-white/20"
@@ -765,7 +795,7 @@ export default function WalletPage() {
             <div className="flex border-b border-[#AEB8C4]/30 pb-4 gap-6">
               <button
                 type="button"
-                onClick={() => setActiveTab('deposit')}
+                onClick={() => handleTabSwitch('deposit')}
                 className={`pb-2 text-xs sm:text-sm font-extrabold uppercase transition border-b-2 cursor-pointer ${
                   activeTab === 'deposit'
                     ? 'border-[#0B1B36] text-[#0B1B36]'
@@ -776,7 +806,7 @@ export default function WalletPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab('withdrawal')}
+                onClick={() => handleTabSwitch('withdrawal')}
                 className={`pb-2 text-xs sm:text-sm font-extrabold uppercase transition border-b-2 cursor-pointer ${
                   activeTab === 'withdrawal'
                     ? 'border-[#0B1B36] text-[#0B1B36]'
@@ -833,26 +863,76 @@ export default function WalletPage() {
                 </div>
               )}
 
+              {activeTab === 'withdrawal' && (
+                <div className="space-y-2">
+                  <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
+                    Select Fixed Withdrawal Amount (ETB) • -3% Fee
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    {FIXED_WITHDRAWAL_TIERS.map((preset) => {
+                      const fee = roundMoney(preset * WITHDRAWAL_FEE_RATE);
+                      const net = roundMoney(preset - fee);
+                      const isSelected = Number(amount) === preset;
+                      const canAfford = preset <= withdrawableProfit;
+
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => setAmount(String(preset))}
+                          className={`p-3 rounded-2xl border text-left transition cursor-pointer space-y-0.5 ${
+                            isSelected
+                              ? 'bg-[#0B1B36] text-white border-[#0B1B36]'
+                              : canAfford
+                              ? 'bg-[#F5F7FA] hover:bg-slate-200/70 text-[#0B1B36] border-[#AEB8C4]/50'
+                              : 'bg-[#F5F7FA]/60 text-[#536171] border-[#AEB8C4]/30'
+                          }`}
+                        >
+                          <div className="font-extrabold text-xs">
+                            ETB {preset.toLocaleString()}
+                          </div>
+                          <div
+                            className={`text-[10px] ${
+                              isSelected ? 'text-white/75' : 'text-[#536171]'
+                            }`}
+                          >
+                            -3% ({fee.toFixed(2)}) • Net {net.toLocaleString()}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="font-bold text-[#536171] uppercase text-[10px]">
-                    Amount (ETB)
+                    {activeTab === 'withdrawal'
+                      ? 'Selected Withdrawal Amount (ETB)'
+                      : 'Deposit Amount (ETB)'}
                   </label>
                   <input
                     type="number"
                     step="0.01"
                     min="1"
-                    max={activeTab === 'withdrawal' ? withdrawableProfit : undefined}
-                    placeholder="e.g. 500"
+                    readOnly={activeTab === 'withdrawal'}
+                    placeholder={
+                      activeTab === 'withdrawal' ? 'Choose a fixed tier above' : 'e.g. 500'
+                    }
                     value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
+                    onChange={(e) => {
+                      if (activeTab === 'deposit') setAmount(e.target.value);
+                    }}
+                    className={`w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs ${
+                      activeTab === 'withdrawal' ? 'cursor-not-allowed opacity-90' : ''
+                    }`}
                     required
                   />
                 </div>
                 <div className="space-y-1">
                   <label className="font-bold text-[#536171] uppercase text-[10px]">
-                    {method === 'telebirr' ? 'Telebirr Number' : 'CBE Account Number'}
+                    {method === 'telebirr' ? 'Sender Telebirr Number' : 'Sender CBE Account Number'}
                   </label>
                   <input
                     type="text"
@@ -899,9 +979,10 @@ export default function WalletPage() {
                 </div>
               ) : (
                 <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#536171]">
-                  <span>Withdrawal Fee (3%): ETB {withdrawalFeeAmount.toFixed(2)}</span>
+                  <span>Deducted: ETB {totalWithdrawalDeduction.toFixed(2)}</span>
+                  <span>Fee (-3%): -ETB {withdrawalFeeAmount.toFixed(2)}</span>
                   <span className="font-bold text-[#0B1B36]">
-                    Estimated Net Payout: ETB {netWithdrawalPayout.toFixed(2)}
+                    Net Payout: ETB {netWithdrawalPayout.toFixed(2)}
                   </span>
                 </div>
               )}
