@@ -4,33 +4,105 @@
 import { useState, useEffect, Suspense, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { Loader2, CheckCircle2, Clock, Zap, ArrowRight, ShieldCheck, RefreshCw, LayoutDashboard } from 'lucide-react';
+import Link from 'next/link';
+import {
+  Loader2,
+  CheckCircle2,
+  Clock,
+  Zap,
+  ArrowRight,
+  ShieldCheck,
+  RefreshCw,
+  LayoutDashboard,
+  Wallet,
+  Play,
+} from 'lucide-react';
 import { useFGGSystem } from '@/lib/useFGGSystem';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
 
-const TIER_DAILY_YIELDS: Record<string, { fee: number; dailyReturn: number; tierLevel: number; maxTasks: number }> = {
-  'Electronics': { fee: 10500, dailyReturn: 388.5, tierLevel: 1, maxTasks: 5 },
-  'Furniture': { fee: 24000, dailyReturn: 888, tierLevel: 2, maxTasks: 5 },
-  'Solar Systems': { fee: 43000, dailyReturn: 1591, tierLevel: 3, maxTasks: 5 },
-  'EV Bikes & Tuk-Tuks': { fee: 70000, dailyReturn: 2590, tierLevel: 4, maxTasks: 5 },
-  'Real Estate': { fee: 110000, dailyReturn: 4070, tierLevel: 5, maxTasks: 5 },
+const DAILY_YIELD_RATE = 0.037; // 3.7%
+const MAX_DAILY_TASKS = 5;
+
+const TIER_DAILY_YIELDS: Record<
+  string,
+  { fee: number; dailyReturn: number; tierLevel: number; maxTasks: number; taskYieldNum: number }
+> = {
+  Electronics: {
+    fee: 10500,
+    dailyReturn: Number((10500 * DAILY_YIELD_RATE).toFixed(2)),
+    tierLevel: 1,
+    maxTasks: MAX_DAILY_TASKS,
+    taskYieldNum: Number(((10500 * DAILY_YIELD_RATE) / MAX_DAILY_TASKS).toFixed(2)),
+  },
+  Furniture: {
+    fee: 24000,
+    dailyReturn: Number((24000 * DAILY_YIELD_RATE).toFixed(2)),
+    tierLevel: 2,
+    maxTasks: MAX_DAILY_TASKS,
+    taskYieldNum: Number(((24000 * DAILY_YIELD_RATE) / MAX_DAILY_TASKS).toFixed(2)),
+  },
+  'Solar Systems': {
+    fee: 43000,
+    dailyReturn: Number((43000 * DAILY_YIELD_RATE).toFixed(2)),
+    tierLevel: 3,
+    maxTasks: MAX_DAILY_TASKS,
+    taskYieldNum: Number(((43000 * DAILY_YIELD_RATE) / MAX_DAILY_TASKS).toFixed(2)),
+  },
+  'EV Bikes & Tuk-Tuks': {
+    fee: 70000,
+    dailyReturn: Number((70000 * DAILY_YIELD_RATE).toFixed(2)),
+    tierLevel: 4,
+    maxTasks: MAX_DAILY_TASKS,
+    taskYieldNum: Number(((70000 * DAILY_YIELD_RATE) / MAX_DAILY_TASKS).toFixed(2)),
+  },
+  'Real Estate': {
+    fee: 110000,
+    dailyReturn: Number((110000 * DAILY_YIELD_RATE).toFixed(2)),
+    tierLevel: 5,
+    maxTasks: MAX_DAILY_TASKS,
+    taskYieldNum: Number(((110000 * DAILY_YIELD_RATE) / MAX_DAILY_TASKS).toFixed(2)),
+  },
 };
 
-const VIP_TO_CATEGORY: Record<string, string> = {
-  'VIP 1': 'Electronics',
-  'VIP 2': 'Furniture',
-  'VIP 3': 'Solar Systems',
-  'VIP 4': 'EV Bikes & Tuk-Tuks',
-  'VIP 5': 'Real Estate',
+const DB_TIER_ALIASES: Record<string, string> = {
+  'tier 1': 'Electronics',
+  'tier 2': 'Furniture',
+  'tier 3': 'Solar Systems',
+  'tier 4': 'EV Bikes & Tuk-Tuks',
+  'tier 5': 'Real Estate',
+  'vip 1': 'Electronics',
+  'vip 2': 'Furniture',
+  'vip 3': 'Solar Systems',
+  'vip 4': 'EV Bikes & Tuk-Tuks',
+  'vip 5': 'Real Estate',
+  electronics: 'Electronics',
+  furniture: 'Furniture',
+  'solar systems': 'Solar Systems',
+  'ev bikes & tuk-tuks': 'EV Bikes & Tuk-Tuks',
+  'real estate': 'Real Estate',
 };
+
+function resolveTierKey(rawTier?: string | null, fallbackCategory?: string | null): string {
+  const normalized = (rawTier || '').toLowerCase().trim();
+  if (normalized && DB_TIER_ALIASES[normalized]) return DB_TIER_ALIASES[normalized];
+  if (normalized.includes('electronics')) return 'Electronics';
+  if (normalized.includes('furniture')) return 'Furniture';
+  if (normalized.includes('solar')) return 'Solar Systems';
+  if (normalized.includes('ev') || normalized.includes('bike')) return 'EV Bikes & Tuk-Tuks';
+  if (normalized.includes('real estate')) return 'Real Estate';
+
+  if (fallbackCategory && TIER_DAILY_YIELDS[fallbackCategory]) return fallbackCategory;
+  return 'Furniture';
+}
 
 function TasksContent() {
   const router = useRouter();
-  const { state } = useFGGSystem();
+  const { state, timeUntilReset } = useFGGSystem();
 
   const [agent, setAgent] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [executingDaily, setExecutingDaily] = useState(false);
   const [completingId, setCompletingId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<any[]>([]);
   const [tasksCompletedToday, setTasksCompletedToday] = useState(0);
@@ -38,9 +110,12 @@ function TasksContent() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const loadAgentAndTasks = useCallback(async () => {
+  const loadAgentAndTasks = useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session?.user) {
         router.replace('/login');
         return;
@@ -52,47 +127,48 @@ function TasksContent() {
         .eq('id', session.user.id)
         .maybeSingle();
 
-      if (!agentData) return;
+      const resolvedAgent = agentData || {
+        id: session.user.id,
+        username: 'Operator',
+        tier: 'Furniture',
+        balance: 0,
+      };
 
-      const rawTier =
-        agentData?.tier ||
-        agentData?.active_category ||
-        (agentData?.vip_tier ? VIP_TO_CATEGORY[agentData.vip_tier] : null) ||
-        state?.activeCategory ||
-        'Solar Systems';
+      const currentTier = resolveTierKey(
+        resolvedAgent?.tier || resolvedAgent?.active_category || resolvedAgent?.vip_tier,
+        state?.activeCategory
+      );
+      const tierConf = TIER_DAILY_YIELDS[currentTier] || TIER_DAILY_YIELDS.Furniture;
 
-      const currentTier = TIER_DAILY_YIELDS[rawTier] ? rawTier : 'Solar Systems';
-      const tierConf = TIER_DAILY_YIELDS[currentTier];
-
-      // 1. Fetch active tasks for this agent from agent_tasks
-      const { data: tasksData } = await supabase
+      // 1. Fetch active tasks for this agent from agent_tasks (best-effort if table exists)
+      let currentTasks: any[] = [];
+      const { data: tasksData, error: tasksFetchErr } = await supabase
         .from('agent_tasks')
         .select('*')
         .eq('agent_id', session.user.id)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: true });
 
-      let currentTasks = tasksData || [];
+      if (!tasksFetchErr) {
+        currentTasks = tasksData || [];
+        if (currentTasks.length === 0) {
+          const newBatch = Array.from({ length: tierConf.maxTasks }, (_, index) => ({
+            agent_id: session.user.id,
+            category: currentTier,
+            title: `Daily Verification Task #${index + 1}`,
+            description: `Execute verification task #${index + 1} to earn ETB ${tierConf.taskYieldNum.toFixed(2)} (3.7% daily fee aggregate across ${tierConf.maxTasks} tasks).`,
+            reward_amount: tierConf.taskYieldNum,
+            status: 'pending',
+            created_at: new Date().toISOString(),
+          }));
 
-      // If no tasks exist, initialize the 5 quota tasks automatically
-      if (currentTasks.length === 0) {
-        const taskRewardPerItem = Number((tierConf.dailyReturn / 5).toFixed(2));
-        const newBatch = Array.from({ length: 5 }, (_, index) => ({
-          agent_id: session.user.id,
-          category: currentTier,
-          title: `Verification Task #${index + 1}`,
-          description: `Execute verification tasks to generate commission yields of ETB ${taskRewardPerItem} / task (3.7% daily fee aggregate).`,
-          reward_amount: taskRewardPerItem,
-          status: 'pending',
-          created_at: new Date().toISOString(),
-        }));
+          const { data: insertedTasks, error: insertErr } = await supabase
+            .from('agent_tasks')
+            .insert(newBatch)
+            .select();
 
-        const { data: insertedTasks, error: insertErr } = await supabase
-          .from('agent_tasks')
-          .insert(newBatch)
-          .select();
-
-        if (!insertErr && insertedTasks) {
-          currentTasks = insertedTasks;
+          if (!insertErr && insertedTasks) {
+            currentTasks = insertedTasks;
+          }
         }
       }
 
@@ -106,16 +182,17 @@ function TasksContent() {
         .maybeSingle();
 
       if (dailyRecord) {
-        setTasksCompletedToday(dailyRecord.completed_count);
+        setTasksCompletedToday(Number(dailyRecord.completed_count || 0));
       } else {
-        await supabase.from('agent_daily_tasks').insert([
-          { agent_id: session.user.id, task_date: todayStr, completed_count: 0 }
-        ]);
+        await supabase.from('agent_daily_tasks').upsert(
+          [{ agent_id: session.user.id, task_date: todayStr, completed_count: 0 }],
+          { onConflict: 'agent_id, task_date' }
+        );
         setTasksCompletedToday(0);
       }
 
       setTasks(currentTasks);
-      setAgent(agentData);
+      setAgent(resolvedAgent);
     } catch (err) {
       console.error('Failed to load tasks telemetry:', err);
     } finally {
@@ -126,6 +203,26 @@ function TasksContent() {
 
   useEffect(() => {
     loadAgentAndTasks();
+  }, [loadAgentAndTasks]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('tasks-realtime-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_daily_tasks' },
+        () => loadAgentAndTasks()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agents' },
+        () => loadAgentAndTasks()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [loadAgentAndTasks]);
 
   if (loading) {
@@ -139,86 +236,127 @@ function TasksContent() {
     );
   }
 
-  const rawCurrentTier =
-    agent?.tier ||
-    agent?.active_category ||
-    (agent?.vip_tier ? VIP_TO_CATEGORY[agent.vip_tier] : null) ||
-    state?.activeCategory ||
-    'Solar Systems';
+  const currentTierName = resolveTierKey(
+    agent?.tier || agent?.active_category || agent?.vip_tier,
+    state?.activeCategory
+  );
+  const tierConfig = TIER_DAILY_YIELDS[currentTierName] || TIER_DAILY_YIELDS.Furniture;
+  const rewardPerTask = tierConfig.taskYieldNum;
 
-  const currentTierName = TIER_DAILY_YIELDS[rawCurrentTier] ? rawCurrentTier : 'Solar Systems';
-  const tierConfig = TIER_DAILY_YIELDS[currentTierName];
+  const pendingTasks = tasks.filter((t) => t.status !== 'completed' && t.status !== 'complete');
+  const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'complete');
+
+  const completedCount = Math.min(tierConfig.maxTasks, tasksCompletedToday);
+  const completionRate = Math.min(Math.round((completedCount / tierConfig.maxTasks) * 100), 100);
+  const accumulatedToday = Number((completedCount * rewardPerTask).toFixed(2));
+  const isFullyCompleted = completedCount >= tierConfig.maxTasks;
+
+  const commitDailyTaskExecution = async (
+    rewardAmount: number,
+    targetTaskId?: string
+  ) => {
+    if (!agent || completedCount >= tierConfig.maxTasks) return;
+
+    const earned = Number(rewardAmount || rewardPerTask);
+    const newBalance = Number(((Number(agent.balance) || 0) + earned).toFixed(2));
+    const newCount = completedCount + 1;
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // 1. Update agent balance (matching dashboard)
+    const { error: agentErr } = await supabase
+      .from('agents')
+      .update({ balance: newBalance })
+      .eq('id', agent.id);
+
+    if (agentErr) throw agentErr;
+
+    // 2. Upsert today's count in agent_daily_tasks (matching dashboard)
+    const { error: dailyErr } = await supabase
+      .from('agent_daily_tasks')
+      .upsert(
+        [
+          {
+            agent_id: agent.id,
+            task_date: todayStr,
+            completed_count: newCount,
+            updated_at: new Date().toISOString(),
+          },
+        ],
+        { onConflict: 'agent_id, task_date' }
+      );
+
+    if (dailyErr) throw dailyErr;
+
+    // 3. Log to task_history (matching dashboard)
+    await supabase.from('task_history').insert([
+      {
+        agent_id: agent.id,
+        tier: currentTierName,
+        commission_earned: earned,
+      },
+    ]);
+
+    // 4. Mark individual task row completed if available
+    if (targetTaskId) {
+      await supabase
+        .from('agent_tasks')
+        .update({ status: 'completed', completed_at: new Date().toISOString() })
+        .eq('id', targetTaskId);
+
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === targetTaskId
+            ? { ...t, status: 'completed', completed_at: new Date().toISOString() }
+            : t
+        )
+      );
+    }
+
+    setAgent((prev: any) => ({ ...prev, balance: newBalance }));
+    setTasksCompletedToday(newCount);
+    setMessage({
+      text: `Daily task #${newCount}/${tierConfig.maxTasks} executed! Credited ETB ${earned.toFixed(2)} to your balance.`,
+      type: 'success',
+    });
+  };
+
+  const handleExecuteNextDailyTask = async () => {
+    if (executingDaily || completingId || isFullyCompleted) return;
+    setExecutingDaily(true);
+    setMessage(null);
+
+    try {
+      const nextTask = pendingTasks[0];
+      await commitDailyTaskExecution(
+        nextTask?.reward_amount ?? rewardPerTask,
+        nextTask?.id
+      );
+    } catch (err: any) {
+      setMessage({
+        text: err.message || 'Failed to execute daily task.',
+        type: 'error',
+      });
+    } finally {
+      setExecutingDaily(false);
+    }
+  };
 
   const handleCompleteTask = async (taskId: string, rewardAmount: number) => {
-    if (completingId || tasksCompletedToday >= tierConfig.maxTasks) return;
+    if (executingDaily || completingId || isFullyCompleted) return;
     setCompletingId(taskId);
     setMessage(null);
 
     try {
-      // 1. Update individual task status in agent_tasks
-      const { error: taskErr } = await supabase
-        .from('agent_tasks')
-        .update({ status: 'completed', completed_at: new Date().toISOString() })
-        .eq('id', taskId);
-
-      if (taskErr) throw taskErr;
-
-      const newBalance = Number(((agent.balance || 0) + rewardAmount).toFixed(2));
-      const newTotalEarnings = Number(((agent.total_earnings || 0) + rewardAmount).toFixed(2));
-      const newCount = tasksCompletedToday + 1;
-      const todayStr = new Date().toISOString().split('T')[0];
-
-      // 2. Update agent balance and total earnings
-      const { error: agentErr } = await supabase
-        .from('agents')
-        .update({ balance: newBalance, total_earnings: newTotalEarnings })
-        .eq('id', agent.id);
-
-      if (agentErr) throw agentErr;
-
-      // 3. Upsert today's count in agent_daily_tasks
-      const { error: dailyErr } = await supabase
-        .from('agent_daily_tasks')
-        .upsert({
-          agent_id: agent.id,
-          task_date: todayStr,
-          completed_count: newCount,
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'agent_id, task_date' });
-
-      if (dailyErr) throw dailyErr;
-
-      // 4. Log to task_history
-      await supabase.from('task_history').insert([
-        { agent_id: agent.id, tier: currentTierName, commission_earned: rewardAmount }
-      ]);
-
-      // 5. Update local state
-      setAgent((prev: any) => ({ ...prev, balance: newBalance, total_earnings: newTotalEarnings }));
-      setTasksCompletedToday(newCount);
-      setTasks((prev) =>
-        prev.map((t) => (t.id === taskId ? { ...t, status: 'completed', completed_at: new Date().toISOString() } : t))
-      );
-
-      setMessage({
-        text: `Task verified successfully! Credited ETB ${rewardAmount.toLocaleString()} to your balance.`,
-        type: 'success',
-      });
+      await commitDailyTaskExecution(rewardAmount, taskId);
     } catch (err: any) {
-      setMessage({ text: err.message || 'Failed to complete task execution.', type: 'error' });
+      setMessage({
+        text: err.message || 'Failed to complete task execution.',
+        type: 'error',
+      });
     } finally {
       setCompletingId(null);
     }
   };
-
-  const completedTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'complete');
-  const pendingTasks = tasks.filter((t) => t.status !== 'completed' && t.status !== 'complete');
-  
-  const completedCount = Math.max(tasksCompletedToday, completedTasks.length);
-  const completionRate = Math.min(Math.round((completedCount / 5) * 100), 100);
-  const rewardPerTask = Number((tierConfig.dailyReturn / 5).toFixed(2));
-  const accumulatedToday = Number((completedCount * rewardPerTask).toFixed(2));
-  const isFullyCompleted = completedCount >= 5 || pendingTasks.length === 0;
 
   return (
     <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-sans flex relative pb-24 lg:pb-0 selection:bg-[#0B1B36] selection:text-white">
@@ -244,22 +382,26 @@ function TasksContent() {
               </span>
             </div>
           </div>
-          
+
           <div className="flex items-center gap-3">
             <button
-              onClick={() => {
-                setRefreshing(true);
-                loadAgentAndTasks();
-              }}
+              onClick={() => loadAgentAndTasks(true)}
               disabled={refreshing}
               className="p-2.5 rounded-2xl bg-white hover:bg-[#0B1B36] hover:text-white border border-[#AEB8C4]/40 text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
               title="Refresh Quota"
             >
               <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
             </button>
-            <div className="text-xs font-mono font-bold text-[#0B1B36] bg-white px-3.5 py-2 rounded-2xl border border-[#AEB8C4]/40 shadow-xs">
-              Balance: <span className="text-emerald-700">ETB {(agent?.balance || 0).toLocaleString()}</span>
-            </div>
+            <Link
+              href="/wallet"
+              className="text-xs font-mono font-bold text-[#0B1B36] bg-white hover:bg-slate-100 px-3.5 py-2 rounded-2xl border border-[#AEB8C4]/40 shadow-xs flex items-center gap-1.5"
+            >
+              <Wallet size={14} />
+              <span>Balance:</span>
+              <span className="text-emerald-700">
+                ETB {(Number(agent?.balance) || 0).toLocaleString()}
+              </span>
+            </Link>
           </div>
         </header>
 
@@ -268,7 +410,7 @@ function TasksContent() {
             <div
               className={`p-4 rounded-2xl text-xs font-mono border ${
                 message.type === 'success'
-                  ? 'bg-[#0B1B36]/10 text-[#0B1B36] border-[#0B1B36]/30'
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
                   : 'bg-rose-50 text-rose-800 border-rose-200'
               }`}
             >
@@ -276,7 +418,7 @@ function TasksContent() {
             </div>
           )}
 
-          {/* Daily Task Quota Widget with Fully Functional Progress Graph */}
+          {/* Daily Task Quota Widget with Direct Daily Task Execution */}
           <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-sm space-y-5 font-mono">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
               <div className="space-y-1">
@@ -284,22 +426,38 @@ function TasksContent() {
                   <Zap size={16} className="text-[#0B1B36]" /> Daily Task Quota ({currentTierName})
                 </h2>
                 <p className="text-xs text-[#536171]">
-                  Execute verification tasks to generate commission yields of <strong className="text-[#0B1B36]">ETB {rewardPerTask} / task</strong> (3.7% daily fee aggregate).
+                  Execute daily verification tasks to earn{' '}
+                  <strong className="text-[#0B1B36]">
+                    ETB {rewardPerTask.toFixed(2)} / task
+                  </strong>{' '}
+                  (3.7% daily fee aggregate • Reset in {timeUntilReset || '24h'}).
                 </p>
               </div>
               <span className="px-3.5 py-1.5 rounded-full bg-slate-100 text-[#0B1B36] text-xs font-extrabold border border-[#AEB8C4]/40 flex items-center gap-1.5">
-                <CheckCircle2 size={13} className={isFullyCompleted ? 'text-emerald-600' : 'text-amber-500'} /> {completedCount} / 5 Completed
+                <CheckCircle2
+                  size={13}
+                  className={isFullyCompleted ? 'text-emerald-600' : 'text-amber-500'}
+                />{' '}
+                {completedCount} / {tierConfig.maxTasks} Completed
               </span>
             </div>
 
             <div className="space-y-2">
               <div className="flex justify-between text-xs font-bold text-[#536171]">
                 <span>Cycle Completion Rate</span>
-                <span className={isFullyCompleted ? 'text-emerald-700 font-extrabold' : 'text-[#0B1B36]'}>{completionRate}%</span>
+                <span
+                  className={
+                    isFullyCompleted ? 'text-emerald-700 font-extrabold' : 'text-[#0B1B36]'
+                  }
+                >
+                  {completionRate}%
+                </span>
               </div>
               <div className="w-full h-3.5 bg-slate-100 rounded-full overflow-hidden border border-[#AEB8C4]/30 p-0.5">
                 <div
-                  className={`h-full transition-all duration-700 rounded-full ${isFullyCompleted ? 'bg-emerald-600' : 'bg-[#0B1B36]'}`}
+                  className={`h-full transition-all duration-700 rounded-full ${
+                    isFullyCompleted ? 'bg-emerald-600' : 'bg-[#0B1B36]'
+                  }`}
                   style={{ width: `${completionRate}%` }}
                 />
               </div>
@@ -307,42 +465,67 @@ function TasksContent() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
               <div className="bg-[#F5F7FA] p-5 rounded-2xl border border-[#AEB8C4]/30 space-y-1">
-                <div className="text-[10px] text-[#536171] uppercase font-bold tracking-wider">Accumulated Today</div>
+                <div className="text-[10px] text-[#536171] uppercase font-bold tracking-wider">
+                  Accumulated Today
+                </div>
                 <div className="text-xl font-extrabold text-emerald-700">
-                  +ETB {accumulatedToday.toLocaleString()}
+                  +ETB {accumulatedToday.toFixed(2)}
                 </div>
               </div>
 
               <div className="bg-[#F5F7FA] p-5 rounded-2xl border border-[#AEB8C4]/30 space-y-1">
-                <div className="text-[10px] text-[#536171] uppercase font-bold tracking-wider">Target Daily Return (3.7%)</div>
+                <div className="text-[10px] text-[#536171] uppercase font-bold tracking-wider">
+                  Target Daily Return (3.7%)
+                </div>
                 <div className="text-xl font-extrabold text-[#0B1B36]">
-                  ETB {tierConfig.dailyReturn.toLocaleString()}
+                  ETB {tierConfig.dailyReturn.toFixed(2)}
                 </div>
               </div>
             </div>
 
-            {isFullyCompleted && (
+            {isFullyCompleted ? (
               <div className="w-full py-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-extrabold text-xs uppercase tracking-wider text-center flex items-center justify-center gap-2">
                 <CheckCircle2 size={16} className="text-emerald-600" /> Daily Quota Completed (100%)
               </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleExecuteNextDailyTask}
+                disabled={executingDaily || Boolean(completingId)}
+                className="w-full py-4 rounded-2xl bg-[#0B1B36] hover:bg-[#152d56] disabled:bg-slate-300 disabled:text-slate-500 text-white font-extrabold text-xs uppercase tracking-wider transition shadow-md cursor-pointer flex items-center justify-center gap-2"
+              >
+                {executingDaily ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" /> Executing Daily Task...
+                  </>
+                ) : (
+                  <>
+                    <Play size={15} /> Execute Daily Task #{completedCount + 1} (+ETB{' '}
+                    {rewardPerTask.toFixed(2)})
+                  </>
+                )}
+              </button>
             )}
           </div>
 
           {/* Pending Tasks Queue */}
           <div className="space-y-4 font-mono">
             <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
-              <Clock size={16} className="text-amber-600" /> Pending Tasks Queue ({pendingTasks.length})
+              <Clock size={16} className="text-amber-600" /> Pending Tasks Queue (
+              {Math.max(0, tierConfig.maxTasks - completedCount)})
             </h2>
 
-            {pendingTasks.length === 0 || completedCount >= 5 ? (
+            {isFullyCompleted ? (
               <div className="bg-white rounded-3xl p-8 border border-[#AEB8C4]/40 text-center text-xs text-[#536171] space-y-2 shadow-xs">
                 <CheckCircle2 size={28} className="mx-auto text-emerald-600" />
-                <div className="font-bold text-[#0B1B36]">All 5 tasks completed for this cycle!</div>
-                <div>Your daily commission yields have been fully credited.</div>
+                <div className="font-bold text-[#0B1B36]">
+                  All {tierConfig.maxTasks} daily tasks completed for this cycle!
+                </div>
+                <div>Your daily commission yields have been credited to your balance.</div>
               </div>
-            ) : (
+            ) : pendingTasks.length > 0 ? (
               <div className="grid grid-cols-1 gap-4">
-                {pendingTasks.slice(0, 5 - completedCount).map((task, index) => (
+                {pendingTasks.slice(0, tierConfig.maxTasks - completedCount).map((task, index) => (
                   <div
                     key={task.id}
                     className="bg-white rounded-3xl p-6 border border-[#AEB8C4]/40 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4"
@@ -356,13 +539,20 @@ function TasksContent() {
                       </div>
                       <p className="text-[#536171] max-w-lg">{task.description}</p>
                       <div className="text-emerald-700 font-bold pt-1">
-                        Commission Yield: ETB {task.reward_amount || rewardPerTask}
+                        Commission Yield: ETB{' '}
+                        {Number(task.reward_amount ?? rewardPerTask).toFixed(2)}
                       </div>
                     </div>
 
                     <button
-                      onClick={() => handleCompleteTask(task.id, task.reward_amount || rewardPerTask)}
-                      disabled={completingId === task.id}
+                      type="button"
+                      onClick={() =>
+                        handleCompleteTask(
+                          task.id,
+                          Number(task.reward_amount ?? rewardPerTask)
+                        )
+                      }
+                      disabled={Boolean(completingId) || executingDaily}
                       className="w-full sm:w-auto px-6 py-3.5 bg-[#0B1B36] hover:bg-[#152d56] text-white font-extrabold text-xs rounded-2xl transition uppercase tracking-wider shadow-md cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2 shrink-0"
                     >
                       {completingId === task.id ? (
@@ -378,35 +568,74 @@ function TasksContent() {
                   </div>
                 ))}
               </div>
+            ) : (
+              <div className="bg-white rounded-3xl p-6 border border-[#AEB8C4]/40 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs">
+                <div className="text-[#536171]">
+                  Use the <strong className="text-[#0B1B36]">Execute Daily Task</strong> button
+                  above to complete remaining tasks for today.
+                </div>
+                <button
+                  type="button"
+                  onClick={handleExecuteNextDailyTask}
+                  disabled={executingDaily}
+                  className="px-5 py-3 rounded-2xl bg-[#0B1B36] text-white font-bold uppercase tracking-wider cursor-pointer"
+                >
+                  {executingDaily ? 'Executing...' : 'Execute Next Task'}
+                </button>
+              </div>
             )}
           </div>
 
           {/* Completed History */}
-          {completedTasks.length > 0 && (
+          {completedCount > 0 && (
             <div className="space-y-4 pt-4 font-mono">
               <h2 className="text-sm font-extrabold text-[#0B1B36] uppercase tracking-wider flex items-center gap-2">
-                <ShieldCheck size={16} className="text-emerald-600" /> Completed Tasks History ({completedCount}/5)
+                <ShieldCheck size={16} className="text-emerald-600" /> Completed Tasks Today (
+                {completedCount}/{tierConfig.maxTasks})
               </h2>
               <div className="grid grid-cols-1 gap-3">
-                {completedTasks.map((task) => (
-                  <div
-                    key={task.id}
-                    className="bg-white/90 rounded-2xl p-4 border border-[#AEB8C4]/30 flex justify-between items-center text-xs shadow-xs"
-                  >
-                    <div className="flex items-center gap-3">
-                      <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
-                      <div>
-                        <div className="font-bold text-[#0B1B36]">{task.title}</div>
-                        <div className="text-[10px] text-[#536171]">
-                          Verified at {task.completed_at ? new Date(task.completed_at).toLocaleTimeString() : 'Today'}
+                {completedTasks.length > 0
+                  ? completedTasks.map((task, idx) => (
+                      <div
+                        key={task.id || idx}
+                        className="bg-white/90 rounded-2xl p-4 border border-[#AEB8C4]/30 flex justify-between items-center text-xs shadow-xs"
+                      >
+                        <div className="flex items-center gap-3">
+                          <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+                          <div>
+                            <div className="font-bold text-[#0B1B36]">{task.title}</div>
+                            <div className="text-[10px] text-[#536171]">
+                              Verified at{' '}
+                              {task.completed_at
+                                ? new Date(task.completed_at).toLocaleTimeString()
+                                : 'Today'}
+                            </div>
+                          </div>
                         </div>
+                        <span className="font-extrabold text-emerald-700">
+                          + ETB {Number(task.reward_amount ?? rewardPerTask).toFixed(2)}
+                        </span>
                       </div>
-                    </div>
-                    <span className="font-extrabold text-emerald-700">
-                      + ETB {task.reward_amount || rewardPerTask}
-                    </span>
-                  </div>
-                ))}
+                    ))
+                  : Array.from({ length: completedCount }, (_, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-white/90 rounded-2xl p-4 border border-[#AEB8C4]/30 flex justify-between items-center text-xs shadow-xs"
+                      >
+                        <div className="flex items-center gap-3">
+                          <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+                          <div>
+                            <div className="font-bold text-[#0B1B36]">
+                              Daily Verification Task #{idx + 1}
+                            </div>
+                            <div className="text-[10px] text-[#536171]">Verified Today</div>
+                          </div>
+                        </div>
+                        <span className="font-extrabold text-emerald-700">
+                          + ETB {rewardPerTask.toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
               </div>
             </div>
           )}

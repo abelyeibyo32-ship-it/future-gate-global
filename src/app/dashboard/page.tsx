@@ -1,7 +1,7 @@
 // src/app/dashboard/page.tsx
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -22,8 +22,7 @@ import {
   PieChart,
   Check,
   CheckCircle,
-  ArrowUpRight,
-  Loader2
+  ArrowUpRight
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useFGGSystem } from '@/lib/useFGGSystem';
@@ -132,22 +131,16 @@ export default function DashboardPage() {
   const [notification, setNotification] = useState<string | null>(null);
 
   const [agent, setAgent] = useState<AgentRecord | null>(null);
-  const [loading, setLoading] = useState(true);
   const [tasksCompletedToday, setTasksCompletedToday] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [completingTask, setCompletingTask] = useState(false);
 
-  useEffect(() => {
-    setIsMounted(true);
-    fetchDashboardData();
-  }, []);
-
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3500);
-  };
+  }, []);
 
-  const fetchDashboardData = async (manual = false) => {
+  const fetchDashboardData = useCallback(async (manual = false) => {
     if (manual) setIsRefreshing(true);
 
     const { data: authData } = await supabase.auth.getUser();
@@ -158,16 +151,6 @@ export default function DashboardPage() {
       return;
     }
 
-    const { data: agentData, error: agentError } = await supabase
-      .from('agents')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (agentData && !agentError) {
-      setAgent(agentData as AgentRecord);
-    }
-
     const todayStr = new Date().toISOString().split('T')[0];
     const { data: taskRecord } = await supabase
       .from('agent_daily_tasks')
@@ -176,21 +159,70 @@ export default function DashboardPage() {
       .eq('task_date', todayStr)
       .maybeSingle();
 
-    if (taskRecord) {
-      setTasksCompletedToday(taskRecord.completed_count);
-    } else {
-      await supabase.from('agent_daily_tasks').insert([
-        { agent_id: userId, task_date: todayStr, completed_count: 0 }
-      ]);
-      setTasksCompletedToday(0);
+    const completedCount = taskRecord ? Math.max(0, Number(taskRecord.completed_count || 0)) : 0;
+
+    if (!taskRecord) {
+      await supabase.from('agent_daily_tasks').upsert(
+        [{ agent_id: userId, task_date: todayStr, completed_count: 0 }],
+        { onConflict: 'agent_id, task_date' }
+      );
     }
 
-    setLoading(false);
+    setTasksCompletedToday(completedCount);
+
+    const { data: agentData } = await supabase
+      .from('agents')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (agentData) {
+      const rawBalance = Math.max(0, Number(agentData.balance ?? 0));
+      setAgent({
+        ...(agentData as AgentRecord),
+        balance: rawBalance,
+      });
+    } else {
+      setAgent({
+        id: userId,
+        username: 'Operator Alpha',
+        tier: 'Furniture',
+        capital_balance: 24000,
+        balance: 0,
+        referral_code: 'FGG-LRHRZ1',
+      });
+    }
+
     if (manual) {
       setIsRefreshing(false);
       showToast('Dashboard terminal synchronized.');
     }
-  };
+  }, [router, showToast]);
+
+  useEffect(() => {
+    setIsMounted(true);
+    fetchDashboardData();
+  }, [fetchDashboardData]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('dashboard-realtime-sync')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agents' },
+        () => fetchDashboardData()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_daily_tasks' },
+        () => fetchDashboardData()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [fetchDashboardData]);
 
   const handleExecuteTask = async () => {
     if (completingTask || !agent) return;
@@ -206,8 +238,8 @@ export default function DashboardPage() {
 
     setCompletingTask(true);
 
-    const earned = tierObj.taskYieldNum;
-    const newBalance = Number(agent.balance || 0) + earned;
+    const earned = Number(tierObj.taskYieldNum.toFixed(2));
+    const newBalance = Number(((Math.max(0, Number(agent.balance) || 0)) + earned).toFixed(2));
     const newCount = tasksCompletedToday + 1;
     const todayStr = new Date().toISOString().split('T')[0];
 
@@ -247,17 +279,7 @@ export default function DashboardPage() {
     setCompletingTask(false);
   };
 
-  // Block rendering until data is fully verified to eliminate flash/flinch bugs
-  if (!isMounted || loading || !agent) {
-    return (
-      <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] flex items-center justify-center font-mono text-xs">
-        <div className="flex items-center gap-3">
-          <Loader2 size={16} className="animate-spin text-[#0B1B36]" />
-          <span>Synchronizing Node Ledger & Active Tier...</span>
-        </div>
-      </div>
-    );
-  }
+  if (!isMounted) return <div className="min-h-screen bg-[#F5F7FA]" />;
 
   const rawCurrentTier = (agent?.tier || agent?.active_category || agent?.vip_tier || 'Furniture').toLowerCase().trim();
   const currentTierId = DB_TIER_ALIASES[rawCurrentTier] || 'Furniture';
@@ -267,7 +289,8 @@ export default function DashboardPage() {
   const maxTasks = activeTierConfig.maxTasks;
   const progressPercent = Math.min(100, (tasksCompletedToday / maxTasks) * 100);
   const taskYieldValue = activeTierConfig.taskYieldNum;
-  const dailyTotalYield = tasksCompletedToday * taskYieldValue;
+  const dailyTotalYield = Number((tasksCompletedToday * taskYieldValue).toFixed(2));
+  const withdrawableEarnings = Math.max(0, Number(agent?.balance ?? 0));
 
   return (
     <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-sans flex selection:bg-[#0B1B36] selection:text-white relative pb-28 lg:pb-0">
@@ -358,7 +381,7 @@ export default function DashboardPage() {
                 <span className="p-2 rounded-xl bg-[#0B1B36]/5 text-[#0B1B36]"><TrendingUp size={16} /></span>
               </div>
               <div className="text-2xl font-extrabold text-[#0B1B36]">
-                ETB {(agent?.balance || 0).toLocaleString()}
+                ETB {withdrawableEarnings.toLocaleString()}
               </div>
               <div className="text-[11px] text-[#0B1B36]/70 flex items-center gap-1">
                 <Zap size={11} /> Ready for instant payout

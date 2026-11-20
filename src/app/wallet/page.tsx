@@ -1,7 +1,7 @@
 // src/app/wallet/page.tsx
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import {
   ArrowUpRight,
@@ -14,21 +14,28 @@ import {
   XCircle,
   Loader2,
   Menu,
-  Globe,
   RefreshCw,
   ExternalLink,
-  Wallet as WalletIcon
+  Calendar,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useFGGSystem } from '@/lib/useFGGSystem';
 import Navbar from '@/lib/components/Navbar';
 import MobileBottomNav from '@/lib/components/MobileBottomNav';
 
+const WITHDRAWAL_FEE_RATE = 0.03; // 3%
+const DAILY_YIELD_RATE = 0.037; // 3.7%
+const TASKS_PER_DAY = 5;
+
 interface TransactionRequest {
   id: string;
+  agent_id?: string;
   type: 'deposit' | 'withdrawal' | 'registration';
   method: 'telebirr' | 'cbe';
   amount: number;
+  fee_amount?: number;
+  net_amount?: number;
+  remaining_balance?: number | null;
   status: 'pending' | 'approved' | 'rejected';
   sender_or_receiver_number: string;
   transaction_ref?: string;
@@ -36,6 +43,7 @@ interface TransactionRequest {
   created_at: string;
   super_agent_name: string;
   tier?: string;
+  balance_applied?: boolean;
 }
 
 interface SuperAgentNode {
@@ -48,13 +56,231 @@ interface SuperAgentNode {
   cbe_account?: string;
 }
 
-const TIER_FLOORS: Record<string, number> = {
-  'Electronics': 10500,
-  'Furniture': 24000,
-  'Solar Systems': 43000,
-  'EV Bikes & Tuk-Tuks': 70000,
-  'Real Estate': 110000,
+interface DateGroup<T> {
+  dateKey: string;
+  dateLabel: string;
+  sortTimestamp: number;
+  items: T[];
+}
+
+function cleanId(val: unknown): string {
+  return typeof val === 'string' ? val.replace(/[()]/g, '').trim() : '';
+}
+
+function parseNum(val: unknown): number {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  if (typeof val === 'string') {
+    const cleaned = val.replace(/[^0-9.-]+/g, '');
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function roundMoney(val: number): number {
+  return Number((Number.isFinite(val) ? val : 0).toFixed(2));
+}
+
+function getLocalDateKey(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+const MARKETPLACE_TIERS: Record<
+  string,
+  { id: string; name: string; tierLabel: string; fee: number; maxTasks: number; taskYieldNum: number }
+> = {
+  Electronics: {
+    id: 'Electronics',
+    name: 'Electronics',
+    tierLabel: 'Tier 1',
+    fee: 10500,
+    maxTasks: TASKS_PER_DAY,
+    taskYieldNum: roundMoney((10500 * DAILY_YIELD_RATE) / TASKS_PER_DAY),
+  },
+  Furniture: {
+    id: 'Furniture',
+    name: 'Furniture',
+    tierLabel: 'Tier 2',
+    fee: 24000,
+    maxTasks: TASKS_PER_DAY,
+    taskYieldNum: roundMoney((24000 * DAILY_YIELD_RATE) / TASKS_PER_DAY),
+  },
+  'Solar Systems': {
+    id: 'Solar Systems',
+    name: 'Solar Systems',
+    tierLabel: 'Tier 3',
+    fee: 43000,
+    maxTasks: TASKS_PER_DAY,
+    taskYieldNum: roundMoney((43000 * DAILY_YIELD_RATE) / TASKS_PER_DAY),
+  },
+  'EV Bikes & Tuk-Tuks': {
+    id: 'EV Bikes & Tuk-Tuks',
+    name: 'EV Bikes & Tuk-Tuks',
+    tierLabel: 'Tier 4',
+    fee: 70000,
+    maxTasks: TASKS_PER_DAY,
+    taskYieldNum: roundMoney((70000 * DAILY_YIELD_RATE) / TASKS_PER_DAY),
+  },
+  'Real Estate': {
+    id: 'Real Estate',
+    name: 'Real Estate',
+    tierLabel: 'Tier 5',
+    fee: 110000,
+    maxTasks: TASKS_PER_DAY,
+    taskYieldNum: roundMoney((110000 * DAILY_YIELD_RATE) / TASKS_PER_DAY),
+  },
 };
+
+const DB_TIER_ALIASES: Record<string, string> = {
+  'tier 1': 'Electronics',
+  'tier 2': 'Furniture',
+  'tier 3': 'Solar Systems',
+  'tier 4': 'EV Bikes & Tuk-Tuks',
+  'tier 5': 'Real Estate',
+  'vip 1': 'Electronics',
+  'vip 2': 'Furniture',
+  'vip 3': 'Solar Systems',
+  'vip 4': 'EV Bikes & Tuk-Tuks',
+  'vip 5': 'Real Estate',
+  electronics: 'Electronics',
+  furniture: 'Furniture',
+  'solar systems': 'Solar Systems',
+  'ev bikes & tuk-tuks': 'EV Bikes & Tuk-Tuks',
+  'real estate': 'Real Estate',
+};
+
+function resolveCategory(rawTier?: string | null): string {
+  const normalized = (rawTier || 'Furniture').toLowerCase().trim();
+  if (DB_TIER_ALIASES[normalized]) return DB_TIER_ALIASES[normalized];
+  if (normalized.includes('electronics')) return 'Electronics';
+  if (normalized.includes('furniture')) return 'Furniture';
+  if (normalized.includes('solar')) return 'Solar Systems';
+  if (normalized.includes('ev') || normalized.includes('bike')) return 'EV Bikes & Tuk-Tuks';
+  if (normalized.includes('real estate')) return 'Real Estate';
+  return 'Furniture';
+}
+
+function getDateGroupInfo(isoString?: string | null): {
+  dateKey: string;
+  dateLabel: string;
+  dayStartTimestamp: number;
+} {
+  if (!isoString) {
+    return {
+      dateKey: 'no-date',
+      dateLabel: 'No Date Recorded',
+      dayStartTimestamp: 0,
+    };
+  }
+
+  const d = new Date(isoString);
+  if (Number.isNaN(d.getTime())) {
+    return {
+      dateKey: 'no-date',
+      dateLabel: 'No Date Recorded',
+      dayStartTimestamp: 0,
+    };
+  }
+
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const day = d.getDate();
+
+  const dayStart = new Date(year, month, day, 0, 0, 0, 0);
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const yesterdayStart = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() - 1,
+    0,
+    0,
+    0,
+    0
+  );
+
+  const dateKey = getLocalDateKey(dayStart);
+
+  const formattedFullDate = dayStart.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
+  if (dayStart.getTime() === todayStart.getTime()) {
+    return {
+      dateKey,
+      dateLabel: `Today • ${formattedFullDate}`,
+      dayStartTimestamp: dayStart.getTime(),
+    };
+  }
+
+  if (dayStart.getTime() === yesterdayStart.getTime()) {
+    return {
+      dateKey,
+      dateLabel: `Yesterday • ${formattedFullDate}`,
+      dayStartTimestamp: dayStart.getTime(),
+    };
+  }
+
+  return {
+    dateKey,
+    dateLabel: formattedFullDate,
+    dayStartTimestamp: dayStart.getTime(),
+  };
+}
+
+function groupTransactionsByDate(items: TransactionRequest[]): DateGroup<TransactionRequest>[] {
+  const map = new Map<string, DateGroup<TransactionRequest>>();
+
+  for (const item of items) {
+    const { dateKey, dateLabel, dayStartTimestamp } = getDateGroupInfo(item.created_at);
+    const existing = map.get(dateKey);
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      map.set(dateKey, {
+        dateKey,
+        dateLabel,
+        sortTimestamp: dayStartTimestamp,
+        items: [item],
+      });
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.dateKey === 'no-date') return 1;
+    if (b.dateKey === 'no-date') return -1;
+    return b.sortTimestamp - a.sortTimestamp;
+  });
+}
+
+function renderStatusBadge(status: TransactionRequest['status']) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'approved') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+        <CheckCircle2 size={11} /> Approved
+      </span>
+    );
+  }
+  if (normalized === 'rejected') {
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+        <XCircle size={11} /> Rejected
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+      <Clock size={11} /> Pending
+    </span>
+  );
+}
 
 export default function WalletPage() {
   const { timeUntilReset } = useFGGSystem();
@@ -63,7 +289,6 @@ export default function WalletPage() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
 
-  // Core Wallet Form & Request State
   const [activeTab, setActiveTab] = useState<'deposit' | 'withdrawal'>('deposit');
   const [method, setMethod] = useState<'telebirr' | 'cbe'>('telebirr');
   const [amount, setAmount] = useState('');
@@ -76,26 +301,106 @@ export default function WalletPage() {
   const [loading, setLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [requests, setRequests] = useState<TransactionRequest[]>([]);
-  
-  // Database Mapped States (`tier` & `balance`)
-  const [agentCategory, setAgentCategory] = useState<string>('Solar Systems');
-  const [dbCapital, setDbCapital] = useState<number>(43000);
+
+  const [agentCategory, setAgentCategory] = useState<string>('Furniture');
+  const [dbCapital, setDbCapital] = useState<number>(24000);
   const [dbEarnings, setDbEarnings] = useState<number>(0);
+  const [referralProfitEarned, setReferralProfitEarned] = useState<number>(0);
+  const [tasksCompletedToday, setTasksCompletedToday] = useState<number>(0);
   const [currentUserId, setCurrentUserId] = useState<string>('');
 
   const formRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setIsMounted(true);
-    fetchInitialData();
-  }, []);
-
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3500);
-  };
+  }, []);
 
-  const fetchInitialData = async () => {
+  const fetchData = useCallback(
+    async (manualRefresh = false) => {
+      if (manualRefresh) setIsRefreshing(true);
+
+      try {
+        const { data: authData } = await supabase.auth.getUser();
+        const userId = cleanId(authData?.user?.id || '');
+        setCurrentUserId(userId);
+
+        if (!userId) {
+          setRequests([]);
+          setDbEarnings(0);
+          setReferralProfitEarned(0);
+          setTasksCompletedToday(0);
+          return;
+        }
+
+        const [txRes, agentRes, refCommRes, taskRes] = await Promise.all([
+          supabase
+            .from('transaction_requests')
+            .select('*')
+            .eq('agent_id', userId)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('agents')
+            .select('id, tier, capital_balance, balance')
+            .eq('id', userId)
+            .maybeSingle(),
+          supabase
+            .from('referral_commissions')
+            .select('commission_amount')
+            .eq('referrer_id', userId),
+          supabase
+            .from('agent_daily_tasks')
+            .select('completed_count')
+            .eq('agent_id', userId)
+            .eq('task_date', getLocalDateKey())
+            .maybeSingle(),
+        ]);
+
+        const txList = !txRes.error && txRes.data ? (txRes.data as TransactionRequest[]) : [];
+        const agentData = !agentRes.error ? agentRes.data : null;
+
+        let refProfitTotal = 0;
+        if (!refCommRes.error && refCommRes.data && refCommRes.data.length > 0) {
+          refProfitTotal = roundMoney(
+            refCommRes.data.reduce(
+              (sum: number, row: any) => sum + parseNum(row.commission_amount),
+              0
+            )
+          );
+        }
+
+        setReferralProfitEarned(refProfitTotal);
+        setTasksCompletedToday(
+          !taskRes.error ? Number(taskRes.data?.completed_count ?? 0) : 0
+        );
+
+        const authoritativeBalance = roundMoney(
+          agentData?.balance != null && !Number.isNaN(Number(agentData.balance))
+            ? parseNum(agentData.balance)
+            : 0
+        );
+
+        const activeTierRaw = agentData?.tier || 'Furniture';
+
+        setRequests(txList);
+
+        const category = resolveCategory(activeTierRaw);
+        const tierConfig = MARKETPLACE_TIERS[category] || MARKETPLACE_TIERS.Furniture;
+        setAgentCategory(category);
+        setDbCapital(tierConfig.fee);
+        setDbEarnings(authoritativeBalance);
+      } finally {
+        setIsDataLoaded(true);
+        if (manualRefresh) {
+          setIsRefreshing(false);
+          showToast('Wallet balances & transactions updated.');
+        }
+      }
+    },
+    [showToast]
+  );
+
+  const fetchInitialData = useCallback(async () => {
     const { data: nodesData } = await supabase.from('super_agents').select('*');
     if (nodesData && nodesData.length > 0) {
       setSuperAgentsPool(nodesData as SuperAgentNode[]);
@@ -105,7 +410,7 @@ export default function WalletPage() {
       const fallbackNode: SuperAgentNode = {
         id: 'sa-default',
         name: 'Central Escrow Node',
-        tier: 'Solar Systems',
+        tier: 'Furniture',
         region: 'Addis Ababa',
         phone: '0911223344',
         telebirr_account: '0911223344',
@@ -116,61 +421,16 @@ export default function WalletPage() {
     }
 
     await fetchData();
-  };
+  }, [fetchData]);
 
-  const fetchData = async (manualRefresh = false) => {
-    if (manualRefresh) setIsRefreshing(true);
-
-    const { data: authData } = await supabase.auth.getUser();
-    const userId = authData?.user?.id || '00000000-0000-0000-0000-000000000001';
-    setCurrentUserId(userId);
-
-    // 1. Fetch transaction history requests
-    const { data: txData } = await supabase
-      .from('transaction_requests')
-      .select('*')
-      .eq('agent_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (txData) {
-      setRequests(txData as TransactionRequest[]);
-    }
-
-    // 2. Fetch ground-truth agent record
-    const { data: agentData } = await supabase
-      .from('agents')
-      .select('tier, capital_balance, balance')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (agentData) {
-      const dbTierRaw = agentData.tier || 'Solar Systems';
-      let category = 'Solar Systems';
-
-      if (dbTierRaw.toLowerCase().includes('electronics')) category = 'Electronics';
-      else if (dbTierRaw.toLowerCase().includes('furniture')) category = 'Furniture';
-      else if (dbTierRaw.toLowerCase().includes('solar')) category = 'Solar Systems';
-      else if (dbTierRaw.toLowerCase().includes('ev') || dbTierRaw.toLowerCase().includes('bike')) category = 'EV Bikes & Tuk-Tuks';
-      else if (dbTierRaw.toLowerCase().includes('real estate')) category = 'Real Estate';
-
-      setAgentCategory(category);
-
-      // Strict ground-truth floor assignment for locked capital
-      const expectedFloor = TIER_FLOORS[category] ?? 43000;
-      setDbCapital(expectedFloor);
-      setDbEarnings(Number(agentData.balance ?? 0));
-    }
-
-    setIsDataLoaded(true);
-    if (manualRefresh) {
-      setIsRefreshing(false);
-      showToast('Wallet balances & transactions updated.');
-    }
-  };
+  useEffect(() => {
+    setIsMounted(true);
+    fetchInitialData();
+  }, [fetchInitialData]);
 
   useEffect(() => {
     const channel = supabase
-      .channel('wallet-realtime-strict-v23')
+      .channel('wallet-realtime-strict-v32')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'transaction_requests' },
@@ -181,12 +441,22 @@ export default function WalletPage() {
         { event: '*', schema: 'public', table: 'agents' },
         () => fetchData()
       )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'referral_commissions' },
+        () => fetchData()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'agent_daily_tasks' },
+        () => fetchData()
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [fetchData]);
 
   const handleFileUpload = async (file: File): Promise<string | null> => {
     try {
@@ -206,14 +476,28 @@ export default function WalletPage() {
       return null;
     }
   };
-  
-  const activeTierFloor = TIER_FLOORS[agentCategory] ?? 43000;
-  const withdrawableProfit = Math.max(0, dbEarnings);
-  const totalAccountValue = dbCapital + dbEarnings;
+
+  const activeTierConfig = MARKETPLACE_TIERS[agentCategory] || MARKETPLACE_TIERS.Furniture;
+  const todayTaskYieldEarned = roundMoney(tasksCompletedToday * activeTierConfig.taskYieldNum);
+  const withdrawableProfit = Math.max(0, roundMoney(dbEarnings));
+  const totalAccountValue = roundMoney(dbCapital + withdrawableProfit);
+
+  const groupedRequests = useMemo(() => groupTransactionsByDate(requests), [requests]);
+
+  const numericInputAmount = Number(amount) || 0;
+  const withdrawalFeeAmount = Number((numericInputAmount * WITHDRAWAL_FEE_RATE).toFixed(2));
+  const netWithdrawalPayout = Number((numericInputAmount - withdrawalFeeAmount).toFixed(2));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loading || !assignedNode) return;
+
+    const { data: authData } = await supabase.auth.getUser();
+    const activeUserId = cleanId(authData?.user?.id || currentUserId);
+    if (!activeUserId) {
+      showToast('Please sign in before submitting a transaction.');
+      return;
+    }
 
     const parsedAmount = Number(amount);
     if (!amount || isNaN(parsedAmount) || parsedAmount <= 0) {
@@ -227,88 +511,115 @@ export default function WalletPage() {
       return;
     }
 
+    const feeAmount =
+      activeTab === 'withdrawal'
+        ? Number((parsedAmount * WITHDRAWAL_FEE_RATE).toFixed(2))
+        : 0;
+    const netPayout =
+      activeTab === 'withdrawal'
+        ? Number((parsedAmount - feeAmount).toFixed(2))
+        : parsedAmount;
+
     if (activeTab === 'withdrawal') {
       if (parsedAmount > withdrawableProfit) {
-        showToast(`Denied: Maximum withdrawable balance is ETB ${withdrawableProfit.toLocaleString()}.`);
+        showToast(
+          `Denied: Maximum withdrawable balance is ETB ${withdrawableProfit.toLocaleString()}.`
+        );
         return;
       }
 
-      // 24-Hour Withdrawal Cooldown Check
+      if (netPayout <= 0) {
+        showToast('Withdrawal amount is too small after the 3% fee.');
+        return;
+      }
+
       const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-      const recentWithdrawal = requests.find((req) => 
-        req.type === 'withdrawal' && 
-        (req.status === 'pending' || req.status === 'approved') &&
-        new Date(req.created_at).getTime() > oneDayAgo
+      const recentWithdrawal = requests.find(
+        (req) =>
+          req.type === 'withdrawal' &&
+          (req.status === 'pending' || req.status === 'approved') &&
+          new Date(req.created_at).getTime() > oneDayAgo
       );
 
       if (recentWithdrawal) {
-        const lastDate = new Date(recentWithdrawal.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        showToast(`Cooldown Active: Withdrawals are limited to once every 24 hours. Last request was at ${lastDate}.`);
+        const lastDate = new Date(recentWithdrawal.created_at).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        showToast(
+          `Cooldown Active: Withdrawals are limited to once every 24 hours. Last request was at ${lastDate}.`
+        );
         return;
       }
     }
 
-    // MANDATORY SCREENSHOT CHECK FOR DEPOSITS
     if (activeTab === 'deposit' && !receiptFile) {
-      showToast('Mandatory: Please upload your transfer receipt screenshot proof before requesting a deposit.');
+      showToast(
+        'Mandatory: Please upload your transfer receipt screenshot proof before requesting a deposit.'
+      );
       return;
     }
 
     setLoading(true);
 
-    let receiptUrl: string | null = null;
-    if (activeTab === 'deposit' && receiptFile) {
-      receiptUrl = await handleFileUpload(receiptFile);
-      if (!receiptUrl) {
-        showToast('Error uploading screenshot receipt proof.');
-        setLoading(false);
+    try {
+      let receiptUrl: string | null = null;
+      if (activeTab === 'deposit' && receiptFile) {
+        receiptUrl = await handleFileUpload(receiptFile);
+        if (!receiptUrl) {
+          showToast('Error uploading screenshot receipt proof.');
+          return;
+        }
+      }
+
+      const payload = {
+        agent_id: activeUserId,
+        super_agent_id: assignedNode.id,
+        super_agent_name: assignedNode.name,
+        type: activeTab,
+        method,
+        amount: parsedAmount,
+        fee_amount: feeAmount,
+        net_amount: netPayout,
+        sender_or_receiver_number: trimmedAccount,
+        transaction_ref:
+          activeTab === 'deposit'
+            ? transactionRef.trim() ||
+              `TXN-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+            : `WD-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+        receipt_url: receiptUrl,
+        status: 'pending',
+        tier: agentCategory,
+      };
+
+      const { error: txError } = await supabase.from('transaction_requests').insert([payload]);
+
+      if (txError) {
+        console.error('Supabase Transaction Error:', txError);
+        showToast(`Error: ${txError.message}`);
         return;
       }
-    }
 
-    const payload = {
-      agent_id: currentUserId,
-      super_agent_id: assignedNode.id,
-      super_agent_name: assignedNode.name,
-      type: activeTab,
-      method,
-      amount: parsedAmount,
-      sender_or_receiver_number: trimmedAccount,
-      transaction_ref: activeTab === 'deposit' ? (transactionRef.trim() || `TXN-${Math.random().toString(36).substring(2, 8).toUpperCase()}`) : `WD-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
-      receipt_url: receiptUrl,
-      status: 'pending',
-      tier: agentCategory,
-    };
+      showToast(
+        activeTab === 'deposit'
+          ? `Deposit request of ETB ${parsedAmount.toLocaleString()} submitted successfully.`
+          : `Withdrawal of ETB ${parsedAmount.toLocaleString()} submitted (3% fee: ETB ${feeAmount.toLocaleString()}, Net: ETB ${netPayout.toLocaleString()}).`
+      );
 
-    const { error: txError } = await supabase
-      .from('transaction_requests')
-      .insert([payload]);
+      setAmount('');
+      setAccountNumber('');
+      setTransactionRef('');
+      setReceiptFile(null);
 
-    if (txError) {
-      console.error('Supabase Transaction Error:', txError);
-      showToast(`Error: ${txError.message}`);
+      if (superAgentsPool.length > 0) {
+        const randomIdx = Math.floor(Math.random() * superAgentsPool.length);
+        setAssignedNode(superAgentsPool[randomIdx]);
+      }
+
+      await fetchData();
+    } finally {
       setLoading(false);
-      return;
     }
-
-    showToast(
-      activeTab === 'deposit'
-        ? `Deposit request of ETB ${parsedAmount.toLocaleString()} submitted successfully.`
-        : `Withdrawal request of ETB ${parsedAmount.toLocaleString()} submitted for approval.`
-    );
-
-    setAmount('');
-    setAccountNumber('');
-    setTransactionRef('');
-    setReceiptFile(null);
-    
-    if (superAgentsPool.length > 0) {
-      const randomIdx = Math.floor(Math.random() * superAgentsPool.length);
-      setAssignedNode(superAgentsPool[randomIdx]);
-    }
-
-    await fetchData();
-    setLoading(false);
   };
 
   const scrollToForm = () => {
@@ -319,7 +630,6 @@ export default function WalletPage() {
 
   return (
     <div className="min-h-screen bg-[#F5F7FA] text-[#0B1B36] font-sans flex selection:bg-[#0B1B36] selection:text-white relative pb-28 lg:pb-0">
-      
       {notification && (
         <div className="fixed bottom-20 lg:bottom-6 right-6 z-50 bg-[#0B1B36] text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-white/20 text-xs font-mono flex items-center gap-3 animate-in fade-in">
           <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
@@ -327,47 +637,56 @@ export default function WalletPage() {
         </div>
       )}
 
-      <Navbar 
-        activeCategory={agentCategory} 
-        isMobileOpen={isMobileMenuOpen} 
-        onCloseMobile={() => setIsMobileMenuOpen(false)} 
+      <Navbar
+        activeCategory={agentCategory}
+        isMobileOpen={isMobileMenuOpen}
+        onCloseMobile={() => setIsMobileMenuOpen(false)}
       />
 
       <main className="flex-1 flex flex-col min-w-0">
         <header className="bg-white/95 backdrop-blur-md border-b border-[#AEB8C4]/40 px-4 sm:px-8 py-3.5 flex items-center justify-between sticky top-0 z-30 font-mono">
           <div className="flex items-center gap-3">
-            <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl border border-[#AEB8C4]/30">
+            <button
+              onClick={() => setIsMobileMenuOpen(true)}
+              className="lg:hidden p-2 text-[#0B1B36] hover:bg-[#F5F7FA] rounded-xl border border-[#AEB8C4]/30"
+            >
               <Menu size={19} />
             </button>
             <div className="text-xs text-[#536171] hidden sm:flex items-center gap-2.5">
-              <span className="font-extrabold text-[#0B1B36]">Wallet Ledger & Escrow</span>
+              <span className="font-extrabold text-[#0B1B36]">Wallet Ledger &amp; Escrow</span>
               <span className="text-[#AEB8C4]">/</span>
               <span className="inline-flex items-center gap-1.5 text-[#0B1B36] bg-slate-100 border border-slate-300 px-2.5 py-0.5 rounded-full text-[11px] font-bold">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                Calculated Ledger Active
+                Authoritative Ledger Active ({activeTierConfig.tierLabel})
               </span>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
-            <button onClick={() => fetchData(true)} disabled={isRefreshing} className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-[#0B1B36] hover:text-white border border-[#AEB8C4]/40 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer">
+            <button
+              onClick={() => fetchData(true)}
+              disabled={isRefreshing}
+              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-[#0B1B36] hover:text-white border border-[#AEB8C4]/40 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+            >
               <RefreshCw size={13} className={isRefreshing ? 'animate-spin' : ''} />
               <span className="hidden sm:inline">Refresh</span>
             </button>
-            <Link href="/dashboard" className="px-3.5 py-1.5 rounded-xl bg-[#0B1B36] text-white text-xs font-bold transition shadow-sm">
+            <Link
+              href="/dashboard"
+              className="px-3.5 py-1.5 rounded-xl bg-[#0B1B36] text-white text-xs font-bold transition shadow-sm"
+            >
               Dashboard
             </Link>
           </div>
         </header>
 
         <div className="p-4 sm:p-8 space-y-6 max-w-5xl mx-auto w-full">
-          
-          {/* BALANCES HEADER */}
           <div className="bg-gradient-to-br from-[#0B1B36] via-[#0B1B36] to-[#0E2447] text-white rounded-3xl p-6 sm:p-8 border border-white/10 shadow-xl space-y-6 font-mono">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div>
                 <div className="text-[10px] text-white/70 uppercase tracking-widest font-bold">
-                  Escrow Treasury & Ledger ({agentCategory})
+                  Escrow Treasury &amp; Ledger ({activeTierConfig.tierLabel}: {agentCategory}) • Reset
+                  in {timeUntilReset}
                 </div>
                 <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight mt-1">
                   Agent Financial Terminal
@@ -376,14 +695,20 @@ export default function WalletPage() {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => { setActiveTab('deposit'); scrollToForm(); }}
+                  onClick={() => {
+                    setActiveTab('deposit');
+                    scrollToForm();
+                  }}
                   className="px-4 py-2.5 rounded-xl bg-white text-[#0B1B36] hover:bg-[#AEB8C4] transition text-xs font-extrabold cursor-pointer flex items-center gap-1.5 shadow-sm"
                 >
                   <ArrowDownLeft size={14} /> Deposit
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setActiveTab('withdrawal'); scrollToForm(); }}
+                  onClick={() => {
+                    setActiveTab('withdrawal');
+                    scrollToForm();
+                  }}
                   className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/25 transition text-xs font-extrabold cursor-pointer flex items-center gap-1.5 border border-white/20"
                 >
                   <ArrowUpRight size={14} /> Withdraw
@@ -398,29 +723,50 @@ export default function WalletPage() {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-white/10">
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
-                  <div className="text-[10px] text-[#AEB8C4] uppercase font-bold">Locked Tier Capital</div>
-                  <div className="text-xl font-extrabold text-white">ETB {dbCapital.toLocaleString()}</div>
+                  <div className="text-[10px] text-[#AEB8C4] uppercase font-bold">
+                    Locked Tier Capital ({activeTierConfig.tierLabel})
+                  </div>
+                  <div className="text-xl font-extrabold text-white">
+                    ETB {dbCapital.toLocaleString()}
+                  </div>
                 </div>
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
-                  <div className="text-[10px] text-[#AEB8C4] uppercase font-bold">Withdrawable Balance</div>
-                  <div className="text-xl font-extrabold text-emerald-400">ETB {withdrawableProfit.toLocaleString()}</div>
+                  <div className="text-[10px] text-[#AEB8C4] uppercase font-bold">
+                    Withdrawable Balance
+                  </div>
+                  <div className="text-xl font-extrabold text-emerald-400">
+                    ETB {withdrawableProfit.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-white/60">
+                    Referral (7%): ETB {referralProfitEarned.toFixed(2)} • Tasks:{' '}
+                    {tasksCompletedToday}/{activeTierConfig.maxTasks} (+ETB{' '}
+                    {todayTaskYieldEarned.toFixed(2)})
+                  </div>
                 </div>
                 <div className="bg-white/5 p-4 rounded-2xl border border-white/10 space-y-1">
-                  <div className="text-[10px] text-[#AEB8C4] uppercase font-bold">Total Portfolio Value</div>
-                  <div className="text-xl font-extrabold text-blue-300">ETB {totalAccountValue.toLocaleString()}</div>
+                  <div className="text-[10px] text-[#AEB8C4] uppercase font-bold">
+                    Total Portfolio Value
+                  </div>
+                  <div className="text-xl font-extrabold text-blue-300">
+                    ETB {totalAccountValue.toLocaleString()}
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* FORM */}
-          <div ref={formRef} className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-6 font-mono">
+          <div
+            ref={formRef}
+            className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-6 font-mono"
+          >
             <div className="flex border-b border-[#AEB8C4]/30 pb-4 gap-6">
               <button
                 type="button"
                 onClick={() => setActiveTab('deposit')}
                 className={`pb-2 text-xs sm:text-sm font-extrabold uppercase transition border-b-2 cursor-pointer ${
-                  activeTab === 'deposit' ? 'border-[#0B1B36] text-[#0B1B36]' : 'border-transparent text-[#536171]'
+                  activeTab === 'deposit'
+                    ? 'border-[#0B1B36] text-[#0B1B36]'
+                    : 'border-transparent text-[#536171]'
                 }`}
               >
                 Request Deposit
@@ -429,7 +775,9 @@ export default function WalletPage() {
                 type="button"
                 onClick={() => setActiveTab('withdrawal')}
                 className={`pb-2 text-xs sm:text-sm font-extrabold uppercase transition border-b-2 cursor-pointer ${
-                  activeTab === 'withdrawal' ? 'border-[#0B1B36] text-[#0B1B36]' : 'border-transparent text-[#536171]'
+                  activeTab === 'withdrawal'
+                    ? 'border-[#0B1B36] text-[#0B1B36]'
+                    : 'border-transparent text-[#536171]'
                 }`}
               >
                 Request Withdrawal
@@ -438,13 +786,17 @@ export default function WalletPage() {
 
             <form onSubmit={handleSubmit} className="space-y-5 text-xs">
               <div className="space-y-1.5">
-                <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">Select Payment Gateway</label>
+                <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
+                  Select Payment Gateway
+                </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <button
                     type="button"
                     onClick={() => setMethod('telebirr')}
                     className={`p-3.5 rounded-2xl border font-bold flex items-center justify-center gap-2 transition cursor-pointer ${
-                      method === 'telebirr' ? 'bg-[#0B1B36] text-white border-[#0B1B36]' : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
+                      method === 'telebirr'
+                        ? 'bg-[#0B1B36] text-white border-[#0B1B36]'
+                        : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
                     }`}
                   >
                     <Smartphone size={16} /> Telebirr
@@ -453,7 +805,9 @@ export default function WalletPage() {
                     type="button"
                     onClick={() => setMethod('cbe')}
                     className={`p-3.5 rounded-2xl border font-bold flex items-center justify-center gap-2 transition cursor-pointer ${
-                      method === 'cbe' ? 'bg-[#0B1B36] text-white border-[#0B1B36]' : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
+                      method === 'cbe'
+                        ? 'bg-[#0B1B36] text-white border-[#0B1B36]'
+                        : 'bg-[#F5F7FA] text-[#0B1B36] border-[#AEB8C4]/40'
                     }`}
                   >
                     <Building2 size={16} /> Commercial Bank of Ethiopia
@@ -467,152 +821,179 @@ export default function WalletPage() {
                     Assigned Escrow Node ({assignedNode.name}):
                   </div>
                   <div>
-                    {method === 'telebirr' 
-                      ? `Account: ${assignedNode.telebirr_account || assignedNode.phone || '0911223344'}` 
-                      : `Account: ${assignedNode.cbe_account || '1000293848592'}`
-                    }
+                    {method === 'telebirr'
+                      ? `Account: ${
+                          assignedNode.telebirr_account || assignedNode.phone || '0911223344'
+                        }`
+                      : `Account: ${assignedNode.cbe_account || '1000293848592'}`}
                   </div>
                 </div>
               )}
 
-              <div className="space-y-1.5">
-                <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">Amount (ETB)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder={activeTab === 'withdrawal' ? `Max withdrawable: ETB ${withdrawableProfit}` : "Enter deposit amount e.g. 5000"}
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full px-4 py-3.5 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-sm"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">
-                  {activeTab === 'deposit' ? 'Your Sender Account / Phone Number' : 'Your Receiving Account / Phone Number'}
-                </label>
-                <input
-                  type="text"
-                  placeholder={method === 'telebirr' ? '09xxxxxxxx' : '1000xxxxxxxx'}
-                  value={accountNumber}
-                  onChange={(e) => setAccountNumber(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-sm"
-                  required
-                />
-              </div>
-
-              {activeTab === 'deposit' && (
-                <div className="space-y-1.5">
-                  <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px]">Transaction Reference ID (Optional)</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="font-bold text-[#536171] uppercase text-[10px]">
+                    Amount (ETB)
+                  </label>
                   <input
-                    type="text"
-                    placeholder="e.g. TXN-994827"
-                    value={transactionRef}
-                    onChange={(e) => setTransactionRef(e.target.value)}
-                    className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-sm"
+                    type="number"
+                    step="0.01"
+                    min="1"
+                    max={activeTab === 'withdrawal' ? withdrawableProfit : undefined}
+                    placeholder="e.g. 500"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
+                    required
                   />
                 </div>
-              )}
+                <div className="space-y-1">
+                  <label className="font-bold text-[#536171] uppercase text-[10px]">
+                    {method === 'telebirr' ? 'Telebirr Number' : 'CBE Account Number'}
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={method === 'telebirr' ? '09xxxxxxxx' : '1000xxxxxxxx'}
+                    value={accountNumber}
+                    onChange={(e) => setAccountNumber(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
+                    required
+                  />
+                </div>
+              </div>
 
-              {activeTab === 'deposit' && (
-                <div className="space-y-1.5">
-                  <label className="font-bold text-[#536171] uppercase tracking-wider text-[10px] flex items-center justify-between">
-                    <span>Mandatory Transfer Receipt Screenshot Proof *</span>
-                    <span className="text-amber-600 font-extrabold">Required</span>
-                  </label>
-                  <label className="flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] bg-[#F5F7FA] cursor-pointer transition font-bold text-[#536171]">
-                    <Upload size={16} />
-                    <span>{receiptFile ? receiptFile.name : 'Choose screenshot receipt image (Required)...'}</span>
+              {activeTab === 'deposit' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="font-bold text-[#536171] uppercase text-[10px]">
+                      Transaction Reference (Optional)
+                    </label>
                     <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => e.target.files && setReceiptFile(e.target.files[0])}
-                      className="hidden"
+                      type="text"
+                      placeholder="e.g. FT26323..."
+                      value={transactionRef}
+                      onChange={(e) => setTransactionRef(e.target.value)}
+                      className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs"
                     />
-                  </label>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="font-bold text-[#536171] uppercase text-[10px]">
+                      Payment Receipt Screenshot *
+                    </label>
+                    <label className="w-full px-4 py-3 rounded-xl bg-[#F5F7FA] border border-dashed border-[#AEB8C4] hover:border-[#0B1B36] flex items-center justify-center gap-2 cursor-pointer font-bold text-[11px] text-[#536171] transition">
+                      <Upload size={14} />
+                      <span className="truncate">
+                        {receiptFile
+                          ? receiptFile.name
+                          : 'Upload receipt image (PNG/JPG)'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={(e) => setReceiptFile(e.target.files?.[0] || null)}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 flex flex-wrap items-center justify-between gap-3 text-[11px]">
+                  <div>
+                    <span className="text-[#536171]">3% Withdrawal Fee: </span>
+                    <strong className="text-[#0B1B36]">
+                      ETB {withdrawalFeeAmount.toLocaleString()}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[#536171]">Estimated Net Payout: </span>
+                    <strong className="text-emerald-700">
+                      ETB {Math.max(0, netWithdrawalPayout).toLocaleString()}
+                    </strong>
+                  </div>
                 </div>
               )}
 
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-3.5 rounded-xl bg-[#0B1B36] hover:bg-[#152d56] text-white font-bold uppercase tracking-wider transition shadow-md cursor-pointer flex items-center justify-center gap-2"
+                className="w-full py-3.5 rounded-2xl bg-[#0B1B36] hover:bg-[#132C56] disabled:opacity-60 text-white font-extrabold uppercase tracking-wider text-xs transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
               >
-                {loading && <Loader2 size={16} className="animate-spin" />}
-                {activeTab === 'deposit' ? 'Submit Deposit Request (Screenshot Required)' : 'Submit Withdrawal Request'}
+                {loading ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" /> Submitting...
+                  </>
+                ) : activeTab === 'deposit' ? (
+                  'Submit Deposit Request'
+                ) : (
+                  'Submit Withdrawal Request'
+                )}
               </button>
             </form>
           </div>
 
-          {/* COMPREHENSIVE TRANSACTION HISTORY */}
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-4 font-mono">
-            <h3 className="text-base font-extrabold text-[#0B1B36] flex items-center gap-2">
-              <WalletIcon size={18} /> Complete Transaction History ({requests.length})
-            </h3>
+          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-[#AEB8C4]/40 shadow-xs space-y-5 font-mono">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-extrabold uppercase tracking-wider text-[#0B1B36]">
+                Transaction History ({requests.length})
+              </h2>
+            </div>
 
-            {requests.length === 0 ? (
-              <div className="py-12 text-center text-xs text-[#536171] bg-[#F5F7FA] rounded-2xl border border-[#AEB8C4]/30">
-                No recent transaction history recorded.
+            {groupedRequests.length === 0 ? (
+              <div className="py-10 text-center text-xs text-[#536171]">
+                No transactions recorded yet.
               </div>
             ) : (
-              <div className="space-y-3">
-                {requests.map((req) => (
-                  <div
-                    key={req.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-2xl bg-[#F5F7FA] border border-[#AEB8C4]/30 text-xs"
-                  >
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`px-2.5 py-0.5 rounded-lg text-[10px] font-extrabold uppercase ${
-                          req.type === 'deposit' ? 'bg-[#0B1B36] text-white' :
-                          req.type === 'withdrawal' ? 'bg-emerald-600 text-white' : 'bg-indigo-700 text-white'
-                        }`}>
-                          {req.type}
-                        </span>
-                        <span className="font-extrabold text-sm text-[#0B1B36]">ETB {Number(req.amount).toLocaleString()}</span>
-                        <span className="text-[10px] text-[#536171] uppercase">({req.method})</span>
-                        {req.tier && (
-                          <span className="px-2 py-0.5 rounded bg-slate-200 text-[#0B1B36] text-[10px] font-bold">
-                            {req.tier}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-[#536171] space-y-0.5">
-                        <div>Assigned Node: <strong className="text-[#0B1B36]">{req.super_agent_name || 'Escrow Gateway'}</strong> | Date: {new Date(req.created_at).toLocaleString()}</div>
-                        {req.transaction_ref && <div>Ref: <strong className="text-[#0B1B36]">{req.transaction_ref}</strong></div>}
-                        {req.receipt_url && (
-                          <div>
-                            <a href={req.receipt_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 underline pt-0.5">
-                              View Attached Receipt <ExternalLink size={10} />
-                            </a>
-                          </div>
-                        )}
-                      </div>
+              <div className="space-y-6">
+                {groupedRequests.map((group) => (
+                  <div key={group.dateKey} className="space-y-2.5">
+                    <div className="flex items-center gap-2 text-[11px] font-bold text-[#536171] uppercase tracking-wider">
+                      <Calendar size={13} />
+                      <span>{group.dateLabel}</span>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase flex items-center gap-1 ${
-                        req.status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
-                        req.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
-                      }`}>
-                        {req.status === 'approved' && <CheckCircle2 size={12} />}
-                        {req.status === 'rejected' && <XCircle size={12} />}
-                        {req.status === 'pending' && <Clock size={12} />}
-                        {req.status}
-                      </span>
+                    <div className="divide-y divide-[#AEB8C4]/25 border border-[#AEB8C4]/35 rounded-2xl overflow-hidden">
+                      {group.items.map((tx) => (
+                        <div
+                          key={tx.id}
+                          className="p-4 bg-white hover:bg-[#F5F7FA]/70 transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                        >
+                          <div className="space-y-1">
+                            <div className="font-extrabold uppercase text-[#0B1B36]">
+                              {tx.type} • {tx.method}
+                            </div>
+                            <div className="text-[11px] text-[#536171]">
+                              Account: {tx.sender_or_receiver_number} • Node: {tx.super_agent_name}
+                            </div>
+                            {tx.receipt_url && (
+                              <a
+                                href={tx.receipt_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-700 hover:underline"
+                              >
+                                View Receipt <ExternalLink size={11} />
+                              </a>
+                            )}
+                          </div>
+
+                          <div className="flex sm:flex-col items-center sm:items-end justify-between gap-1.5">
+                            <div className="font-extrabold text-sm text-[#0B1B36]">
+                              ETB {parseNum(tx.amount).toLocaleString()}
+                            </div>
+                            {renderStatusBadge(tx.status)}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}
               </div>
             )}
           </div>
-
         </div>
       </main>
 
       <MobileBottomNav />
-
     </div>
   );
 }
