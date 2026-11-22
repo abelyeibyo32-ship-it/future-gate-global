@@ -47,6 +47,15 @@ function getLocalDateStr(date: Date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+function isDailyTaskAvailable(date = new Date(), timeZone = 'Africa/Addis_Ababa') {
+  const weekday = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'short',
+  }).format(date);
+
+  return weekday !== 'Sun';
+}
+
 const MARKETPLACE_TIERS = [
   {
     id: 'Electronics',
