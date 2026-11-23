@@ -1,7 +1,7 @@
 // src/app/signup/page.tsx
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -16,6 +16,8 @@ import {
   Copy,
   Check,
   AlertCircle,
+  Award,
+  X,
 } from 'lucide-react';
 
 function normalizePhone(rawPhone: string): string {
@@ -102,26 +104,49 @@ const DEFAULT_FALLBACK_NODE: SuperAgentNode = {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-async function lookupReferrerUuid(rawRef: string): Promise<{
+interface ResolvedReferral {
   id: string | null;
   label: string | null;
-}> {
-  const trimmed = rawRef.trim();
-  if (!trimmed) return { id: null, label: null };
+  source: 'ambassador' | 'agent' | null;
+}
 
+async function resolveReferralCode(rawRef: string): Promise<ResolvedReferral> {
+  const trimmed = rawRef.trim();
+  if (!trimmed) return { id: null, label: null, source: null };
+
+  // 1. Check Ambassadors first by custom_ref_code
+  const { data: ambByCode } = await supabase
+    .from('ambassadors')
+    .select('id, username, custom_ref_code, status')
+    .ilike('custom_ref_code', trimmed)
+    .limit(1)
+    .maybeSingle();
+
+  if (ambByCode && String(ambByCode.status ?? 'active') !== 'suspended') {
+    return {
+      id: UUID_REGEX.test(String(ambByCode.id)) ? String(ambByCode.id) : null,
+      label: `Ambassador @${ambByCode.username || ambByCode.custom_ref_code} (${ambByCode.custom_ref_code})`,
+      source: 'ambassador',
+    };
+  }
+
+  // 2. Check Agents by referral_code
   const { data: byCode } = await supabase
     .from('agents')
     .select('id, username, referral_code')
     .ilike('referral_code', trimmed)
+    .limit(1)
     .maybeSingle();
 
   if (byCode?.id) {
     return {
       id: byCode.id,
       label: byCode.referral_code || byCode.username || byCode.id,
+      source: 'agent',
     };
   }
 
+  // 3. Check Agents by UUID
   if (UUID_REGEX.test(trimmed)) {
     const { data: byId } = await supabase
       .from('agents')
@@ -133,11 +158,12 @@ async function lookupReferrerUuid(rawRef: string): Promise<{
       return {
         id: byId.id,
         label: byId.referral_code || byId.username || byId.id,
+        source: 'agent',
       };
     }
   }
 
-  return { id: null, label: trimmed };
+  return { id: null, label: trimmed, source: null };
 }
 
 function SignupContent() {
@@ -149,6 +175,7 @@ function SignupContent() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [username, setUsername] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [referralInput, setReferralInput] = useState('');
 
   const [selectedCategory, setSelectedCategory] = useState(CATEGORY_TIERS[0].id);
   const [paymentMethod, setPaymentMethod] = useState<'telebirr' | 'cbe'>('telebirr');
@@ -162,12 +189,35 @@ function SignupContent() {
   const [assignedAgent, setAssignedAgent] = useState<SuperAgentNode>(DEFAULT_FALLBACK_NODE);
   const [resolvedReferrerId, setResolvedReferrerId] = useState<string | null>(null);
   const [activeRefLabel, setActiveRefLabel] = useState<string | null>(null);
+  const [refSource, setRefSource] = useState<'ambassador' | 'agent' | null>(null);
+  const [checkingRef, setCheckingRef] = useState(false);
   const [copiedAccount, setCopiedAccount] = useState(false);
+
+  const applyReferralLookup = useCallback(async (codeToCheck: string) => {
+    const clean = codeToCheck.trim();
+    if (!clean) {
+      setResolvedReferrerId(null);
+      setActiveRefLabel(null);
+      setRefSource(null);
+      setCheckingRef(false);
+      return;
+    }
+
+    setCheckingRef(true);
+    try {
+      const resolved = await resolveReferralCode(clean);
+      setResolvedReferrerId(resolved.id);
+      setActiveRefLabel(resolved.label);
+      setRefSource(resolved.source);
+    } finally {
+      setCheckingRef(false);
+    }
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
 
-    const fetchSuperAgentsAndResolve = async () => {
+    const initPortal = async () => {
       const explicitRef = urlRefCode?.trim() || null;
       if (explicitRef) {
         localStorage.setItem('fgg_ref_code', explicitRef);
@@ -177,17 +227,18 @@ function SignupContent() {
         explicitRef ||
         localStorage.getItem('fgg_ref_code')?.trim() ||
         localStorage.getItem('fgg_referred_by')?.trim() ||
-        null;
+        '';
 
-      if (candidateRef) {
-        const { id: matchedReferrerId, label } = await lookupReferrerUuid(candidateRef);
+      if (isMounted && candidateRef) {
+        setReferralInput(candidateRef.toUpperCase());
+        setCheckingRef(true);
+        const resolved = await resolveReferralCode(candidateRef);
         if (isMounted) {
-          setResolvedReferrerId(matchedReferrerId);
-          setActiveRefLabel(label);
+          setResolvedReferrerId(resolved.id);
+          setActiveRefLabel(resolved.label);
+          setRefSource(resolved.source);
+          setCheckingRef(false);
         }
-      } else if (isMounted) {
-        setResolvedReferrerId(null);
-        setActiveRefLabel(null);
       }
 
       const { data: nodesData } = await supabase
@@ -212,12 +263,40 @@ function SignupContent() {
       }
     };
 
-    fetchSuperAgentsAndResolve();
+    initPortal();
 
     return () => {
       isMounted = false;
     };
   }, [urlRefCode]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      applyReferralLookup(referralInput);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [referralInput, applyReferralLookup]);
+
+  const handleReferralChange = (value: string) => {
+    const upper = value.toUpperCase();
+    setReferralInput(upper);
+    if (upper.trim()) {
+      localStorage.setItem('fgg_ref_code', upper.trim());
+    } else {
+      localStorage.removeItem('fgg_ref_code');
+      localStorage.removeItem('fgg_referred_by');
+    }
+  };
+
+  const handleClearReferral = () => {
+    setReferralInput('');
+    setResolvedReferrerId(null);
+    setActiveRefLabel(null);
+    setRefSource(null);
+    setCheckingRef(false);
+    localStorage.removeItem('fgg_ref_code');
+    localStorage.removeItem('fgg_referred_by');
+  };
 
   const handleCopyAccount = (textToCopy: string) => {
     navigator.clipboard.writeText(textToCopy);
@@ -286,16 +365,19 @@ function SignupContent() {
       return;
     }
 
-    let finalReferrerId: string | null = resolvedReferrerId;
     const fallbackRef =
+      referralInput.trim() ||
       urlRefCode?.trim() ||
       localStorage.getItem('fgg_ref_code')?.trim() ||
       localStorage.getItem('fgg_referred_by')?.trim() ||
       '';
 
+    let finalReferrerId: string | null = resolvedReferrerId;
+    let finalSource = refSource;
     if (fallbackRef) {
-      const { id } = await lookupReferrerUuid(fallbackRef);
-      finalReferrerId = id;
+      const resolved = await resolveReferralCode(fallbackRef);
+      finalReferrerId = resolved.id;
+      finalSource = resolved.source;
     }
 
     const receiptUrl = await handleFileUpload(receiptFile);
@@ -319,6 +401,8 @@ function SignupContent() {
           phone: cleanPhone,
           tier: selectedCategory,
           referred_by: finalReferrerId,
+          referral_code_used: fallbackRef ? fallbackRef.toUpperCase() : null,
+          referral_source: finalSource,
         },
       },
     });
@@ -421,6 +505,11 @@ function SignupContent() {
             <div>
               <strong>Assigned Node:</strong> {assignedAgent.name}
             </div>
+            {referralInput.trim() && (
+              <div>
+                <strong>Referral Code:</strong> {referralInput.trim().toUpperCase()}
+              </div>
+            )}
             <div>
               <strong>Selected Tier:</strong> {currentTierData?.name}
             </div>
@@ -466,9 +555,10 @@ function SignupContent() {
             Assigned to alternating node:{' '}
             <strong className="text-blue-900 font-bold">{assignedAgent.name}</strong> (
             {assignedAgent.region || 'Central'}).{' '}
-            {resolvedReferrerId && (
+            {activeRefLabel && (
               <span className="block text-emerald-700 font-bold mt-0.5">
-                ✓ Valid referral link detected ({activeRefLabel || 'Linked'}).
+                ✓ Referral code active: {activeRefLabel}
+                {refSource === 'ambassador' ? ' (7% Ambassador Bounty)' : ''}
               </span>
             )}
           </p>
@@ -544,6 +634,52 @@ function SignupContent() {
                     required
                   />
                 </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-[#536171] uppercase text-[10px] flex items-center gap-1.5">
+                  <Award size={12} className="text-emerald-600" />
+                  <span>Ambassador or Agent Referral Code (Optional)</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="e.g. REF_CODE"
+                    value={referralInput}
+                    onChange={(e) => handleReferralChange(e.target.value)}
+                    className="w-full px-4 pr-10 py-3 rounded-xl bg-[#F5F7FA] border border-[#AEB8C4]/50 focus:outline-none focus:border-[#0B1B36] font-bold text-xs uppercase"
+                  />
+                  {referralInput.trim() !== '' && (
+                    <button
+                      type="button"
+                      onClick={handleClearReferral}
+                      className="absolute right-3 top-3 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      title="Clear Referral Code"
+                    >
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
+                {checkingRef && (
+                  <p className="text-[10px] text-slate-400 pt-0.5">Checking referral code...</p>
+                )}
+                {!checkingRef && referralInput.trim() !== '' && (
+                  <p
+                    className={`text-[10px] font-bold pt-0.5 ${
+                      refSource === 'ambassador'
+                        ? 'text-emerald-700'
+                        : refSource === 'agent'
+                        ? 'text-blue-700'
+                        : 'text-amber-700'
+                    }`}
+                  >
+                    {refSource === 'ambassador'
+                      ? `✓ Matched ${activeRefLabel} (7% Bounty)`
+                      : refSource === 'agent'
+                      ? `✓ Matched Agent Referral (${activeRefLabel})`
+                      : `Code "${referralInput.trim()}" will be recorded for review`}
+                  </p>
+                )}
               </div>
             </div>
 
